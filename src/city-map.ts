@@ -76,8 +76,8 @@ export function drawRoute(canvas: HTMLCanvasElement, scene: CityScene) {
   ctx.lineWidth = 3;
   ctx.stroke();
   ctx.shadowBlur = 0;
-  if (route.length > 1) dot(ctx, ...project(...route[0]), 6, "#91e5ff");
-  dot(ctx, ...project(...route[route.length - 1]), 6, "#ffca89");
+  if (scene.originPoint) dot(ctx, ...project(...scene.originPoint), 6, "#91e5ff");
+  dot(ctx, ...project(...scene.destinationPoint), 6, "#ffca89");
 }
 
 function measureRoute(route: Point[]) {
@@ -246,8 +246,9 @@ export function mountCityMap(canvas: HTMLCanvasElement, start: HTMLElement, end:
     }
 
     for (const [index, label] of [start, end].entries()) {
-      if (!index && route.length === 1) continue;
-      const [x, y] = index ? route[route.length - 1] : route[0];
+      const point = index ? scene.destinationPoint : scene.originPoint;
+      if (!point) continue;
+      const [x, y] = point;
       const [groundX, groundY] = routeProject(x, y);
       const [labelX, labelY] = project(x, y, .55);
       const accent = index ? "#ffc480" : "#8ee7ff";

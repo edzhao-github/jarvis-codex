@@ -1,3 +1,4 @@
+import { answerProfileQuestion, profileQuestion, resolveProfileMap } from "./profile-map";
 import { anatomyMarkup, anatomyRequest, mountAnatomy } from "./anatomy";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -7,7 +8,7 @@ import "./style.css";
 import "./workspace.css";
 import { cityMapMarkup, drawRoute, mountCityMap } from "./city-map";
 import { mountCitySearch } from "./city-search";
-import { mapFollowUp, mapIntent, mapIntentFromClassification, readMapAction, type MapIntent } from "./map-intent";
+import { completeMapEndpoint, failedMapFollowUp, mapDestinationChange, mapFollowUp, mapIntent, mapIntentFromClassification, readMapAction, type MapIntent, type PendingMapAddress } from "./map-intent";
 import { mountSystemStats, systemStatsMarkup } from "./system-stats";
 
 type Mode = "booting" | "ready" | "voice-starting" | "listening" | "working" | "speaking" | "degraded" | "stopped";
@@ -44,6 +45,9 @@ const state = {
 };
 
 const WORKSPACE_KEY = "jarvis.workspace";
+const MAP_CITY_KEY = "jarvis.mapCity";
+const DEFAULT_MAP_CITY = "大连";
+let mapCity = localStorage.getItem(MAP_CITY_KEY)?.trim() || DEFAULT_MAP_CITY;
 const THREAD_KEY_PREFIX = "jarvis.threadId:";
 const PERMISSION_KEY = "jarvis.permissionMode";
 const permissionLabels: Record<PermissionMode, string> = {
@@ -83,9 +87,10 @@ let microphoneHoldUntil = 0;
 let mapSpeechStartUntil = 0;
 let activeMapKey = "";
 let mapContext: MapIntent | null = null;
-let recentMapCity = "";
-let pendingMapAddress: (MapIntent & { missing: "origin" | "destination" }) | null = null;
+let pendingMapAddress: PendingMapAddress | null = null;
 let intentRevision = 0;
+let lastMapFailure: { revision: number; message: string } | null = null;
+const hasMapFailure = () => lastMapFailure?.revision === intentRevision;
 const previewParams = new URLSearchParams(window.location.search);
 const tauriInternals = (window as Window & { __TAURI_INTERNALS__?: { invoke?: unknown } }).__TAURI_INTERNALS__;
 const currentWindow = typeof tauriInternals?.invoke === "function" ? getCurrentWindow() : null;
@@ -162,7 +167,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   </footer>
   <div id="degraded-banner" class="degraded-banner" hidden><b>JARVIS NEEDS PERMISSION</b><span id="degraded-copy">首次使用请允许麦克风和语音识别。</span></div>
   <dialog id="approval"><h2>高风险操作确认</h2><p id="approval-copy">Codex 请求执行需要确认的动作。</p><div><button id="deny">拒绝</button><button id="approve">允许一次</button></div></dialog>
-  <dialog id="settings-dialog"><h2>JARVIS SYSTEM</h2><dl><dt>Wake phrase</dt><dd>嗨 Jarvis / Hey Jarvis</dd><dt>Wake listener</dt><dd id="wake-auth">检测中</dd><dt>Codex thread</dt><dd id="thread-id">—</dd><dt>Workspace</dt><dd id="workspace">—</dd><dt>Permission</dt><dd id="permission-mode-label">—</dd><dt>Voice kernel</dt><dd id="voice-auth">检测中</dd></dl><label class="workspace-setting">工作目录<input id="workspace-setting" autocomplete="off" spellcheck="false"></label><fieldset class="permission-setting"><legend>Codex 操作权限</legend><label><input type="radio" name="permission-mode" value="safe"><span><b>安全模式</b><small>超出当前目录或高风险操作时询问</small></span></label><label class="recommended"><input type="radio" name="permission-mode" value="auto"><span><b>自动办公</b><small>当前目录内自主执行，越界操作直接阻止</small></span><em>推荐</em></label><label class="danger"><input type="radio" name="permission-mode" value="full"><span><b>完全访问</b><small>不限制目录且不询问，请谨慎使用</small></span></label></fieldset><p>权限切换会停止当前任务并重建 Codex 运行时，但会继续使用当前工作目录保存的 thread。</p><p>修改工作目录后，下次重启 Jarvis 生效。每个工作目录会续接自己的 Codex thread。</p><p>“新开线程”会结束当前任务并创建一个全新的 Codex thread；原线程仍保留在 Codex 历史记录中。</p><p>唤醒词在本机识别；Jarvis 页面通过 Codex app-server V3 WebRTC 进入官方 Voice 线程。认证复用本机 Codex 登录，不读取凭据、不模拟点击，也不建立第二套 GPT-Live。</p><div class="settings-actions"><button id="new-thread" class="new-thread">＋ 新开线程</button><span></span><button id="save-settings">保存</button><button id="close-settings">关闭</button></div></dialog>
+  <dialog id="settings-dialog"><h2>JARVIS SYSTEM</h2><dl><dt>Wake phrase</dt><dd>嗨 Jarvis / Hey Jarvis</dd><dt>Wake listener</dt><dd id="wake-auth">检测中</dd><dt>Codex thread</dt><dd id="thread-id">—</dd><dt>Workspace</dt><dd id="workspace">—</dd><dt>Permission</dt><dd id="permission-mode-label">—</dd><dt>Voice kernel</dt><dd id="voice-auth">检测中</dd></dl><label class="workspace-setting">工作目录<input id="workspace-setting" autocomplete="off" spellcheck="false"></label><label class="workspace-setting map-city-setting">地图默认城市<input id="map-city-setting" maxlength="30" autocomplete="off" spellcheck="false"></label><fieldset class="permission-setting"><legend>Codex 操作权限</legend><label><input type="radio" name="permission-mode" value="safe"><span><b>安全模式</b><small>超出当前目录或高风险操作时询问</small></span></label><label class="recommended"><input type="radio" name="permission-mode" value="auto"><span><b>自动办公</b><small>当前目录内自主执行，越界操作直接阻止</small></span><em>推荐</em></label><label class="danger"><input type="radio" name="permission-mode" value="full"><span><b>完全访问</b><small>不限制目录且不询问，请谨慎使用</small></span></label></fieldset><p>权限切换会停止当前任务并重建 Codex 运行时，但会继续使用当前工作目录保存的 thread。</p><p>修改工作目录后，下次重启 Jarvis 生效。每个工作目录会续接自己的 Codex thread。</p><p>“新开线程”会结束当前任务并创建一个全新的 Codex thread；原线程仍保留在 Codex 历史记录中。</p><p>唤醒词在本机识别；Jarvis 页面通过 Codex app-server V3 WebRTC 进入官方 Voice 线程。认证复用本机 Codex 登录，不读取凭据、不模拟点击，也不建立第二套 GPT-Live。</p><div class="settings-actions"><button id="new-thread" class="new-thread">＋ 新开线程</button><span></span><button id="save-settings">保存</button><button id="close-settings">关闭</button></div></dialog>
 </main>`;
 
 const $ = <T extends Element>(selector: string) => document.querySelector<T>(selector)!;
@@ -234,16 +239,13 @@ function handleAnatomy(text: string) {
 const citySearch = mountCitySearch((scene, origin, destination) => {
   if (cityView.hidden) setCityOpen(true, false);
   pendingMapAddress = null;
-  mapContext = { destination: destination.name, origin: origin?.name };
-  recentMapCity = destination.city ?? origin?.city ?? "";
+  mapContext = citySearch.input();
   const originLabel = origin ? origin.name + (origin.approximate ? "附近" : "") : null;
   const destinationLabel = destination.name + (destination.approximate ? "附近" : "");
   city.setScene(scene, originLabel, destinationLabel);
   drawRoute($<HTMLCanvasElement>("#route-map"), scene);
   $("#city-location").textContent = destination.area || "在线地图";
-  $("#city-title").textContent = destinationLabel;
-  const nearby = [origin?.approximate ? `起点按「${origin.name}」附近定位` : "",
-    origin && destination.approximate ? `终点按「${destination.name}」附近定位` : ""].filter(Boolean);
+  $("#city-title").textContent = originLabel ? `起点：${originLabel} → 目的地：${destinationLabel}` : destinationLabel;
   response.textContent = destination.approximate
     ? `已显示「${destination.name}」附近的地图。`
     : `已显示「${destination.name}」的全息地图。`;
@@ -257,7 +259,7 @@ const citySearch = mountCitySearch((scene, origin, destination) => {
     $("#city-distance").textContent = `驾车约 ${minutes} 分钟 · ${distance} km`;
     $("#route-distance").textContent = `驾车 · ${distance} km`;
     $("#route-time span").textContent = String(minutes);
-    const summary = `路线已规划，约${distance}公里，驾车约${minutes}分钟。${nearby.length ? `${nearby.join("，")}。` : ""}`;
+    const summary = `从「${origin.name}」到「${destination.name}」，约${distance}公里，驾车约${minutes}分钟。`;
     response.textContent = summary;
     speakMapPrompt(summary);
   } else {
@@ -266,11 +268,53 @@ const citySearch = mountCitySearch((scene, origin, destination) => {
     speakMapPrompt(response.textContent);
   }
 }, (message, failed, missing) => {
-  response.textContent = message;
-  if (!failed) return;
+  if (!failed) {
+    response.textContent = message;
+    return;
+  }
   if (missing) pendingMapAddress = { ...citySearch.input(), missing };
-  speakMapPrompt(message);
+  const { origin, route } = citySearch.input();
+  reportMapFailure(`${origin || route ? "这次路线没生成。" : "这次没能打开地图。"}${message}`);
 });
+
+function reportMapFailure(message: string) {
+  lastMapFailure = { revision: intentRevision, message };
+  mapLookupPending = false;
+  activeMapKey = "";
+  mapPromptQueue = null;
+  response.textContent = message;
+  if (!currentWindow || !peer || state.manualStop) return;
+
+  mapReplyMuted = true;
+  voiceAudio.muted = true;
+  setMode("listening");
+  const holdUntil = performance.now() + 16_000;
+  mapSpeechStartUntil = holdUntil;
+  syncMicrophone();
+  void invoke("speak_map_failure", { text: message }).catch((error) => {
+    console.warn("Jarvis 地图失败提示播报失败", error);
+  }).finally(() => {
+    if (mapSpeechStartUntil !== holdUntil) return;
+    mapSpeechStartUntil = 0;
+    syncMicrophone();
+  });
+}
+
+function beginUserCommand(text: string) {
+  const failure = hasMapFailure() ? lastMapFailure : null;
+  const revision = ++intentRevision;
+  mapPromptQueue = null;
+  if (failure) clearMapMute();
+  const followUp = failure ? failedMapFollowUp(text) : null;
+  if (failure && followUp) {
+    const message = followUp === "landmark" && pendingMapAddress
+      ? `${failure.message.split("。", 1)[0]}。这个地标还不能帮我确定${pendingMapAddress.missing === "origin" ? "起点" : "目的地"}。你可以直接说地点名称或所在区，我再查一次。`
+      : failure.message;
+    reportMapFailure(message);
+    return null;
+  }
+  return revision;
+}
 
 function speakMapPrompt(text: string) {
   mapLookupPending = false;
@@ -279,6 +323,10 @@ function speakMapPrompt(text: string) {
     clearMapMute();
     return;
   }
+  queueSpokenReply(text);
+}
+
+function queueSpokenReply(text: string) {
   const now = performance.now();
   muteMapReply();
   mapPromptQueue = { text, readyAt: now + 750 };
@@ -343,46 +391,90 @@ function openRecentMap() {
   speakMapPrompt(message);
 }
 
-function openMapRequest(intent: MapIntent) {
-  const key = JSON.stringify([intent.origin ?? "", intent.destination].map((place) =>
-    place.normalize("NFKC").replace(/\s+/g, "").toLowerCase()));
+async function openMapRequest(intent: MapIntent) {
+  const revision = intentRevision;
+  if (currentWindow) {
+    response.textContent = "正在读取用户档案，核对路线地点…";
+    try {
+      const profile = await invoke<string | null>("read_user_profile", { cwd: workspace });
+      if (revision !== intentRevision || state.manualStop) return;
+      intent = resolveProfileMap(intent, profile);
+    } catch {
+      if (revision === intentRevision && !state.manualStop) {
+        reportMapFailure("用户档案读取失败，尚未开始查询路线。请检查文件后重试。");
+      }
+      return;
+    }
+  }
+  if (revision !== intentRevision || state.manualStop) return;
+  const key = JSON.stringify([Boolean(intent.route || intent.origin),
+    ...[intent.origin ?? "", intent.destination].map((place) => place.normalize("NFKC").replace(/\s+/g, "").toLowerCase())]);
   if (activeMapKey === key) return;
+  lastMapFailure = null;
   activeMapKey = key;
   pendingMapAddress = null;
   mapPromptQueue = null;
   mapLookupPending = true;
   if (peer) muteMapReply();
   if (shell.dataset.view === "avatar") switchViewButton.click();
-  void citySearch.show(intent, recentMapCity);
+  void citySearch.show(intent, mapCity);
 }
 
 let mapClassification: Promise<MapIntent | null> = Promise.resolve(null);
 async function interpretMapRequest(text: string, revision: number): Promise<MapIntent | null> {
+  const correction = mapDestinationChange(text, pendingMapAddress ?? mapContext) ?? completeMapEndpoint(text, pendingMapAddress);
+  if (correction) return correction;
   const direct = mapIntent(text);
   const followUp = mapFollowUp(text);
-  if (direct && !followUp) return direct;
+  if (direct && (direct.origin || !followUp)) return direct;
   if (!currentWindow) return direct;
   mapClassification = mapClassification.then(() => {
     if (revision !== intentRevision || state.manualStop) return null;
     const context = followUp === "area" ? pendingMapAddress : followUp ? pendingMapAddress ?? mapContext : null;
     return invoke<MapIntent | null>("classify_map_intent", { text, context })
-      .then(intent => mapIntentFromClassification(intent, text, Boolean(context?.origin)))
+      .then(intent => mapIntentFromClassification(intent && context?.route ? { ...intent, route: true } : intent,
+        text, Boolean(context?.origin || context?.route)))
       .catch(() => direct);
   });
   return mapClassification;
 }
 
+async function handleProfileQuestion(text: string, revision: number): Promise<boolean> {
+  const question = profileQuestion(text);
+  if (!question || !currentWindow) return false;
+  const connection = peer;
+  if (connection) {
+    muteMapReply();
+    voiceAudio.muted = true;
+    mapMuteUntil = performance.now() + 16_000;
+  }
+  let message: string;
+  try {
+    const profile = await invoke<string | null>("read_user_profile", { cwd: workspace });
+    message = answerProfileQuestion(question, profile);
+  } catch {
+    message = "这次没能读取《用户档案.md》，请检查文件后再试。";
+  }
+  if (revision !== intentRevision || state.manualStop) return true;
+  response.textContent = message;
+  if (connection && connection === peer) queueSpokenReply(message);
+  return true;
+}
+
 async function handleSpokenCommand(text: string) {
   const connection = peer;
   if (!connection || state.manualStop || !text || /^(?:[嗯啊哦呃唔]+[。！!，,]*|\[[a-z _-]+\]?)$/i.test(text)) return;
-  const revision = ++intentRevision;
+  const revision = beginUserCommand(text);
+  if (revision === null) return;
+  if (await handleProfileQuestion(text, revision) || revision !== intentRevision) return;
   if (handleAnatomy(text)) return;
   if (isOpenMapCommand(text)) {
     openRecentMap();
     return;
   }
   // Hold likely map replies while semantic classification runs.
-  if (mapFollowUp(text) || mapIntent(text)) {
+  if (mapFollowUp(text) || mapIntent(text) || completeMapEndpoint(text, pendingMapAddress) ||
+      mapDestinationChange(text, pendingMapAddress ?? mapContext)) {
     muteMapReply();
     mapMuteUntil = performance.now() + 16_000;
   }
@@ -812,7 +904,7 @@ function updateAudioMeters() {
       const { text } = mapPromptQueue;
       mapPromptQueue = null;
       playMapPrompt(text);
-    } else if (mapReplyMuted && !mapLookupPending && !mapPromptQueue &&
+    } else if (mapReplyMuted && !hasMapFailure() && !mapLookupPending && !mapPromptQueue &&
         now > mapMuteUntil && now - lastRemoteSpeech >= 750) {
       clearMapMute();
     }
@@ -882,7 +974,7 @@ async function handle(message: Message) {
   } else if (method === "thread/realtime/transcript/delta") {
     const delta = typeof params?.delta === "string" ? params.delta : "";
     if (params?.role === "assistant") {
-      if (mapReplyMuted) return;
+      if (mapReplyMuted || hasMapFailure()) return;
       microphoneHoldUntil = performance.now() + 900;
       syncMicrophone();
       assistantTranscriptBuffer += delta;
@@ -899,7 +991,7 @@ async function handle(message: Message) {
   } else if (method === "thread/realtime/transcript/done") {
     const text = typeof params?.text === "string" ? params.text.trim() : "";
     if (params?.role === "assistant") {
-      if (text && !mapReplyMuted) response.textContent = text;
+      if (text && !mapReplyMuted && !hasMapFailure()) response.textContent = text;
       assistantTranscriptBuffer = "";
     } else {
       const utterance = text || userTranscriptBuffer.trim();
@@ -912,7 +1004,7 @@ async function handle(message: Message) {
     }
   } else if (method === "thread/realtime/itemAdded") {
     const itemType = String(params?.item?.type ?? "");
-    if (itemType.includes("handoff") || itemType.includes("delegation")) {
+    if (!hasMapFailure() && (itemType.includes("handoff") || itemType.includes("delegation"))) {
       setMode("working");
       setWorker("orchestrator", "Delegating to Codex");
     }
@@ -938,14 +1030,14 @@ async function handle(message: Message) {
       await armWakeListener();
     }
   } else if (method === "turn/started") {
-    if (state.manualStop) return;
+    if (state.manualStop || hasMapFailure()) return;
     agentMessageBuffer = "";
     state.agentWorking = true;
     setMode("working"); setWorker("orchestrator", "Codex working");
   } else if (method === "item/agentMessage/delta") {
     const delta = typeof params?.delta === "string" ? params.delta : "";
     agentMessageBuffer += delta;
-    if (!mapReplyMuted && agentMessageBuffer && !"JARVIS_MAP ".startsWith(agentMessageBuffer) && !agentMessageBuffer.startsWith("JARVIS_MAP ")) {
+    if (!hasMapFailure() && !mapReplyMuted && agentMessageBuffer && !"JARVIS_MAP ".startsWith(agentMessageBuffer) && !agentMessageBuffer.startsWith("JARVIS_MAP ")) {
       response.textContent = agentMessageBuffer;
     }
   } else if (method === "turn/completed") {
@@ -953,7 +1045,7 @@ async function handle(message: Message) {
       $("#completed-count").textContent = String(++completedCount);
     }
     state.agentWorking = false;
-    if (!state.manualStop) triggerCharacterAction("complete", 1400);
+    if (!state.manualStop && !hasMapFailure()) triggerCharacterAction("complete", 1400);
     setMode(state.manualStop ? "stopped" : state.directVoice?.voiceActive ? "listening" : "ready");
     setWorker("orchestrator", state.manualStop ? "Interrupted" : "Ready", !state.manualStop);
     for (const role of ["developer", "researcher", "reviewer"]) {
@@ -965,6 +1057,7 @@ async function handle(message: Message) {
   else if (method === "item/completed") {
     setWorker(roleOf(params), "Complete", false);
     if (params?.item?.type === "agentMessage") {
+      if (hasMapFailure()) return;
       const text = typeof params.item.text === "string" ? params.item.text : agentMessageBuffer;
       const action = readMapAction(text);
       if (action && !state.manualStop) {
@@ -1201,13 +1294,16 @@ $("#command-form").addEventListener("submit", async (event) => {
   transcript.textContent = text;
   input.value = "";
   if (handleAnatomy(text)) return;
-  const revision = ++intentRevision;
-  const direct = mapIntent(text);
+  const revision = beginUserCommand(text);
+  if (revision === null) return;
+  if (await handleProfileQuestion(text, revision) || revision !== intentRevision) return;
+  const correction = mapDestinationChange(text, pendingMapAddress ?? mapContext) ?? completeMapEndpoint(text, pendingMapAddress);
+  const direct = correction ?? mapIntent(text);
   if (isOpenMapCommand(text)) {
     openRecentMap();
     return;
   }
-  if (direct && (!currentWindow || !mapFollowUp(text))) {
+  if (direct && (correction || direct.origin || !currentWindow || !mapFollowUp(text))) {
     openMapRequest(direct);
     return;
   }
@@ -1279,6 +1375,7 @@ function syncPermissionControls() {
 
 $("#settings").addEventListener("click", () => {
   syncPermissionControls();
+  $<HTMLInputElement>("#map-city-setting").value = mapCity;
   settings.showModal();
 });
 $("#close-settings").addEventListener("click", () => settings.close());
@@ -1329,6 +1426,12 @@ $("#save-settings").addEventListener("click", async () => {
     'input[name="permission-mode"]:checked',
   )?.value as PermissionMode | undefined;
   const nextPermission = selectedPermission ?? permissionMode;
+  const nextCity = $<HTMLInputElement>("#map-city-setting").value.normalize("NFKC").trim() || DEFAULT_MAP_CITY;
+  if (nextCity !== mapCity) {
+    mapCity = nextCity;
+    localStorage.setItem(MAP_CITY_KEY, mapCity);
+    response.textContent = `地图默认城市已设为${mapCity}。`;
+  }
   if (nextWorkspace !== workspace) {
     localStorage.setItem(WORKSPACE_KEY, nextWorkspace);
     response.textContent = "工作目录已保存，重启 Jarvis 后生效。";

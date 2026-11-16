@@ -1,21 +1,28 @@
 # Local macOS installation
 
-Personality is embedded from `src-tauri/src/personality.txt` in thread start and
-resume instructions. It defines 喵维斯 as a confident mechanical cat with candid,
-reasoned disagreement, concise discussion of tradeoffs, and truthful tool-result
-reporting. Restart the app after rebuilding to refresh an existing runtime.
+Jarvis reads `喵维斯设定.md` from the selected workspace when starting or resuming
+a Codex thread and again when starting a voice session. If it is missing or empty,
+Jarvis uses the built-in `src-tauri/src/personality.txt`. After editing the role,
+restart the app to refresh its text runtime, or reconnect Voice to refresh the
+voice prompt. For personal questions, Codex consults the relevant parts of
+`用户档案.md` on demand. Voice delegates those questions to Codex. Map aliases
+are resolved locally; no profile is attached to ordinary messages.
 
 The installed app is `/Applications/Jarvis Codex.app`.
 
-Normal launch should run in the background. `--jarvis-wake` and `--show`
-are foreground entry points. This behavior is implemented in the Rust source.
+When updating the executable in the installed bundle, build it with
+`npm exec -- tauri build --no-bundle`. The Tauri build embeds the frontend.
+A plain `cargo build --release` still loads the development server, so it can
+leave the installed app with a blank window. After signing and installing the
+new executable, open the app and verify that the main interface renders.
 
-The installed app has been rebuilt from this checkout with the mechanical-cat
-asset, updated wake helper, and background-by-default Rust startup. Its
-`CFBundleExecutable` is `jarvis-launcher`, compiled from
-`scripts/background-launcher.c`. The launcher executes
-`Contents/MacOS/jarvis-codex` with `--background` on normal launches and
-preserves foreground wake launches. The launcher also exports enabled system HTTP
+Opening Jarvis from Applications or Launchpad shows its main window. Opening
+it again restores a hidden or minimized window. The login agent passes
+`--background` to start with only the wake listener active.
+
+The installed app's `CFBundleExecutable` is `jarvis-launcher`, compiled from
+`scripts/background-launcher.c`. The launcher forwards arguments to
+`Contents/MacOS/jarvis-codex` and exports enabled system HTTP
 and HTTPS proxy settings for the Codex child process; explicit proxy environment
 variables take precedence. A full source build must retain this launcher or
 implement equivalent proxy inheritance. Both executables and the app bundle

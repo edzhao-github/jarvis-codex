@@ -1,5 +1,4 @@
-// Compatibility launcher for the installed v0.2.0 binary. Source builds use
-// the same background-by-default behavior directly in src-tauri/src/lib.rs.
+// Bundle launcher that discovers Codex and inherits the system proxy.
 #include <mach-o/dyld.h>
 #include <CFNetwork/CFNetwork.h>
 #include <limits.h>
@@ -50,6 +49,7 @@ static void discover_codex(void) {
 }
 
 int main(int argc, char **argv) {
+    if (argc < 1) return 1;
     discover_codex();
     CFDictionaryRef proxies = CFNetworkCopySystemProxySettings();
     if (proxies) {
@@ -69,22 +69,8 @@ int main(int argc, char **argv) {
     if (prefix + strlen(runtime) + 1 > sizeof(path)) return 1;
     strcpy(path + prefix, runtime);
 
-    int foreground = 0, background = 0;
-    for (int i = 1; i < argc; ++i) {
-        foreground |= strcmp(argv[i], "--jarvis-wake") == 0 || strcmp(argv[i], "--show") == 0;
-        background |= strcmp(argv[i], "--background") == 0;
-    }
-    char **args = calloc((size_t)argc + 2, sizeof(char *));
-    if (!args) return 1;
-    int count = 0;
-    args[count++] = path;
-    for (int i = 1; i < argc; ++i) {
-        if (foreground && strcmp(argv[i], "--background") == 0) continue;
-        args[count++] = argv[i];
-    }
-    if (!foreground && !background) args[count++] = "--background";
-    execv(path, args);
+    argv[0] = path;
+    execv(path, argv);
     perror("Could not start Jarvis Codex");
-    free(args);
     return 1;
 }
