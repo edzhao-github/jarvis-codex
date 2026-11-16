@@ -45,6 +45,7 @@ const state = {
 };
 
 const WORKSPACE_KEY = "jarvis.workspace";
+const MAP_ENABLED = false;
 const MAP_CITY_KEY = "jarvis.mapCity";
 const DEFAULT_MAP_CITY = "大连";
 let mapCity = localStorage.getItem(MAP_CITY_KEY)?.trim() || DEFAULT_MAP_CITY;
@@ -123,7 +124,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
     <div class="workspace-core">
       <div class="core-status"><span></span><b id="core-state">SYSTEM BOOT</b><span></span></div>
       <canvas id="core-orb" aria-hidden="true"></canvas>
-      ${cityMapMarkup}
+      ${MAP_ENABLED ? cityMapMarkup : ""}
       ${anatomyMarkup}
     </div>
     <div class="avatar-window">
@@ -154,7 +155,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <small>语音信号</small>
     </section>
   </aside>
-  ${workspaceContext}
+  ${workspaceContext(MAP_ENABLED)}
   <section class="dialogue hud-panel" aria-label="最新对话">
     <div class="dialogue-user"><b>YOU</b><p id="user-transcript">“嗨，Jarvis”</p></div>
     <div class="dialogue-reply"><b class="jarvis">JARVIS</b><p id="assistant-transcript">正在启动贾维斯…</p></div>
@@ -167,7 +168,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   </footer>
   <div id="degraded-banner" class="degraded-banner" hidden><b>JARVIS NEEDS PERMISSION</b><span id="degraded-copy">首次使用请允许麦克风和语音识别。</span></div>
   <dialog id="approval"><h2>高风险操作确认</h2><p id="approval-copy">Codex 请求执行需要确认的动作。</p><div><button id="deny">拒绝</button><button id="approve">允许一次</button></div></dialog>
-  <dialog id="settings-dialog"><h2>JARVIS SYSTEM</h2><dl><dt>Wake phrase</dt><dd>嗨 Jarvis / Hey Jarvis</dd><dt>Wake listener</dt><dd id="wake-auth">检测中</dd><dt>Codex thread</dt><dd id="thread-id">—</dd><dt>Workspace</dt><dd id="workspace">—</dd><dt>Permission</dt><dd id="permission-mode-label">—</dd><dt>Voice kernel</dt><dd id="voice-auth">检测中</dd></dl><label class="workspace-setting">工作目录<input id="workspace-setting" autocomplete="off" spellcheck="false"></label><label class="workspace-setting map-city-setting">地图默认城市<input id="map-city-setting" maxlength="30" autocomplete="off" spellcheck="false"></label><fieldset class="permission-setting"><legend>Codex 操作权限</legend><label><input type="radio" name="permission-mode" value="safe"><span><b>安全模式</b><small>超出当前目录或高风险操作时询问</small></span></label><label class="recommended"><input type="radio" name="permission-mode" value="auto"><span><b>自动办公</b><small>当前目录内自主执行，越界操作直接阻止</small></span><em>推荐</em></label><label class="danger"><input type="radio" name="permission-mode" value="full"><span><b>完全访问</b><small>不限制目录且不询问，请谨慎使用</small></span></label></fieldset><p>权限切换会停止当前任务并重建 Codex 运行时，但会继续使用当前工作目录保存的 thread。</p><p>修改工作目录后，下次重启 Jarvis 生效。每个工作目录会续接自己的 Codex thread。</p><p>“新开线程”会结束当前任务并创建一个全新的 Codex thread；原线程仍保留在 Codex 历史记录中。</p><p>唤醒词在本机识别；Jarvis 页面通过 Codex app-server V3 WebRTC 进入官方 Voice 线程。认证复用本机 Codex 登录，不读取凭据、不模拟点击，也不建立第二套 GPT-Live。</p><div class="settings-actions"><button id="new-thread" class="new-thread">＋ 新开线程</button><span></span><button id="save-settings">保存</button><button id="close-settings">关闭</button></div></dialog>
+  <dialog id="settings-dialog"><h2>JARVIS SYSTEM</h2><dl><dt>Wake phrase</dt><dd>嗨 Jarvis / Hey Jarvis</dd><dt>Wake listener</dt><dd id="wake-auth">检测中</dd><dt>Codex thread</dt><dd id="thread-id">—</dd><dt>Workspace</dt><dd id="workspace">—</dd><dt>Permission</dt><dd id="permission-mode-label">—</dd><dt>Voice kernel</dt><dd id="voice-auth">检测中</dd></dl><label class="workspace-setting">工作目录<input id="workspace-setting" autocomplete="off" spellcheck="false"></label>${MAP_ENABLED ? `<label class="workspace-setting map-city-setting">地图默认城市<input id="map-city-setting" maxlength="30" autocomplete="off" spellcheck="false"></label>` : ""}<fieldset class="permission-setting"><legend>Codex 操作权限</legend><label><input type="radio" name="permission-mode" value="safe"><span><b>安全模式</b><small>超出当前目录或高风险操作时询问</small></span></label><label class="recommended"><input type="radio" name="permission-mode" value="auto"><span><b>自动办公</b><small>当前目录内自主执行，越界操作直接阻止</small></span><em>推荐</em></label><label class="danger"><input type="radio" name="permission-mode" value="full"><span><b>完全访问</b><small>不限制目录且不询问，请谨慎使用</small></span></label></fieldset><p>权限切换会停止当前任务并重建 Codex 运行时，但会继续使用当前工作目录保存的 thread。</p><p>修改工作目录后，下次重启 Jarvis 生效。每个工作目录会续接自己的 Codex thread。</p><p>“新开线程”会结束当前任务并创建一个全新的 Codex thread；原线程仍保留在 Codex 历史记录中。</p><p>唤醒词在本机识别；Jarvis 页面通过 Codex app-server V3 WebRTC 进入官方 Voice 线程。认证复用本机 Codex 登录，不读取凭据、不模拟点击，也不建立第二套 GPT-Live。</p><div class="settings-actions"><button id="new-thread" class="new-thread">＋ 新开线程</button><span></span><button id="save-settings">保存</button><button id="close-settings">关闭</button></div></dialog>
 </main>`;
 
 const $ = <T extends Element>(selector: string) => document.querySelector<T>(selector)!;
@@ -200,10 +201,10 @@ mountSystemStats(currentWindow ? () => invoke("system_stats") : null, voiceInUse
 
 mountOrb($<HTMLCanvasElement>("#core-orb"), () => state, voiceInUse);
 
-const cityView = $<HTMLElement>("#city-view");
-const routeButton = $<HTMLButtonElement>("#open-city");
-const closeCity = $<HTMLButtonElement>("#close-city");
-const city = mountCityMap($<HTMLCanvasElement>("#city-canvas"), $<HTMLElement>("#city-start"), $<HTMLElement>("#city-end"), $<HTMLButtonElement>("#orbit-city"));
+const cityView = MAP_ENABLED ? $<HTMLElement>("#city-view") : null;
+const routeButton = MAP_ENABLED ? $<HTMLButtonElement>("#open-city") : null;
+const closeCity = MAP_ENABLED ? $<HTMLButtonElement>("#close-city") : null;
+const city = MAP_ENABLED ? mountCityMap($<HTMLCanvasElement>("#city-canvas"), $<HTMLElement>("#city-start"), $<HTMLElement>("#city-end"), $<HTMLButtonElement>("#orbit-city")) : null;
 
 const anatomy = mountAnatomy($<HTMLElement>(".anatomy-view"), () => {
   closeAnatomy();
@@ -223,7 +224,7 @@ function handleAnatomy(text: string) {
   pendingMapAddress = null;
   const name = subject ? anatomy.open(subject) : null;
   if (name) {
-    if (!cityView.hidden) setCityOpen(false, false);
+    if (cityView && !cityView.hidden) setCityOpen(false, false);
     if (shell.dataset.view === "avatar") switchViewButton.click();
     shell.setAttribute("data-anatomy-open", "");
     $<HTMLButtonElement>(".anatomy-view [data-explode]").focus();
@@ -237,6 +238,7 @@ function handleAnatomy(text: string) {
 }
 
 const citySearch = mountCitySearch((scene, origin, destination) => {
+  if (!cityView || !city) return;
   if (cityView.hidden) setCityOpen(true, false);
   pendingMapAddress = null;
   mapContext = citySearch.input();
@@ -352,13 +354,14 @@ function syncMicrophone(now = performance.now()) {
 }
 
 function setCityOpen(open: boolean, focus = true) {
+  if (!cityView || !routeButton || !city) return;
   if (open) closeAnatomy();
   cityView.hidden = !open;
   shell.toggleAttribute("data-city-open", open);
   routeButton.setAttribute("aria-expanded", String(open));
   if (open) {
     city.show();
-    if (focus) closeCity.focus();
+    if (focus) closeCity?.focus();
   } else {
     ++intentRevision;
     pendingMapAddress = null;
@@ -392,6 +395,7 @@ function openRecentMap() {
 }
 
 async function openMapRequest(intent: MapIntent) {
+  if (!MAP_ENABLED) return;
   const revision = intentRevision;
   if (currentWindow) {
     response.textContent = "正在读取用户档案，核对路线地点…";
@@ -422,6 +426,7 @@ async function openMapRequest(intent: MapIntent) {
 
 let mapClassification: Promise<MapIntent | null> = Promise.resolve(null);
 async function interpretMapRequest(text: string, revision: number): Promise<MapIntent | null> {
+  if (!MAP_ENABLED) return null;
   const correction = mapDestinationChange(text, pendingMapAddress ?? mapContext) ?? completeMapEndpoint(text, pendingMapAddress);
   if (correction) return correction;
   const direct = mapIntent(text);
@@ -468,6 +473,7 @@ async function handleSpokenCommand(text: string) {
   if (revision === null) return;
   if (await handleProfileQuestion(text, revision) || revision !== intentRevision) return;
   if (handleAnatomy(text)) return;
+  if (!MAP_ENABLED) return;
   if (isOpenMapCommand(text)) {
     openRecentMap();
     return;
@@ -497,25 +503,27 @@ function clearMapMute() {
   voiceAudio.muted = false;
 }
 
-routeButton.addEventListener("click", () => {
-  if (!cityView.hidden) {
-    setCityOpen(false);
-    return;
-  }
-  ++intentRevision;
-  openRecentMap();
-});
-closeCity.addEventListener("click", () => setCityOpen(false));
-$("#reset-city").addEventListener("click", city.reset);
-const citySource = $<HTMLButtonElement>("#city-source");
-const citySourceDetails = $<HTMLElement>("#city-source-details");
-citySource.addEventListener("click", () => {
-  citySourceDetails.hidden = !citySourceDetails.hidden;
-  citySource.setAttribute("aria-expanded", String(!citySourceDetails.hidden));
-});
-cityView.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") setCityOpen(false);
-});
+if (city && cityView) {
+  routeButton?.addEventListener("click", () => {
+    if (!cityView.hidden) {
+      setCityOpen(false);
+      return;
+    }
+    ++intentRevision;
+    openRecentMap();
+  });
+  closeCity?.addEventListener("click", () => setCityOpen(false));
+  $("#reset-city").addEventListener("click", city.reset);
+  const citySource = $<HTMLButtonElement>("#city-source");
+  const citySourceDetails = $<HTMLElement>("#city-source-details");
+  citySource.addEventListener("click", () => {
+    citySourceDetails.hidden = !citySourceDetails.hidden;
+    citySource.setAttribute("aria-expanded", String(!citySourceDetails.hidden));
+  });
+  cityView.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") setCityOpen(false);
+  });
+}
 
 switchViewButton.addEventListener("click", () => {
   const view = shell.dataset.view === "workspace" ? "avatar" : "workspace";
@@ -1297,15 +1305,17 @@ $("#command-form").addEventListener("submit", async (event) => {
   const revision = beginUserCommand(text);
   if (revision === null) return;
   if (await handleProfileQuestion(text, revision) || revision !== intentRevision) return;
-  const correction = mapDestinationChange(text, pendingMapAddress ?? mapContext) ?? completeMapEndpoint(text, pendingMapAddress);
-  const direct = correction ?? mapIntent(text);
-  if (isOpenMapCommand(text)) {
-    openRecentMap();
-    return;
-  }
-  if (direct && (correction || direct.origin || !currentWindow || !mapFollowUp(text))) {
-    openMapRequest(direct);
-    return;
+  if (MAP_ENABLED) {
+    const correction = mapDestinationChange(text, pendingMapAddress ?? mapContext) ?? completeMapEndpoint(text, pendingMapAddress);
+    const direct = correction ?? mapIntent(text);
+    if (isOpenMapCommand(text)) {
+      openRecentMap();
+      return;
+    }
+    if (direct && (correction || direct.origin || !currentWindow || !mapFollowUp(text))) {
+      openMapRequest(direct);
+      return;
+    }
   }
   if (!currentWindow) {
     response.textContent = "视觉预览：文字任务已切换为 Codex 工作态。";
@@ -1375,7 +1385,7 @@ function syncPermissionControls() {
 
 $("#settings").addEventListener("click", () => {
   syncPermissionControls();
-  $<HTMLInputElement>("#map-city-setting").value = mapCity;
+  if (MAP_ENABLED) $<HTMLInputElement>("#map-city-setting").value = mapCity;
   settings.showModal();
 });
 $("#close-settings").addEventListener("click", () => settings.close());
@@ -1426,11 +1436,13 @@ $("#save-settings").addEventListener("click", async () => {
     'input[name="permission-mode"]:checked',
   )?.value as PermissionMode | undefined;
   const nextPermission = selectedPermission ?? permissionMode;
-  const nextCity = $<HTMLInputElement>("#map-city-setting").value.normalize("NFKC").trim() || DEFAULT_MAP_CITY;
-  if (nextCity !== mapCity) {
-    mapCity = nextCity;
-    localStorage.setItem(MAP_CITY_KEY, mapCity);
-    response.textContent = `地图默认城市已设为${mapCity}。`;
+  if (MAP_ENABLED) {
+    const nextCity = $<HTMLInputElement>("#map-city-setting").value.normalize("NFKC").trim() || DEFAULT_MAP_CITY;
+    if (nextCity !== mapCity) {
+      mapCity = nextCity;
+      localStorage.setItem(MAP_CITY_KEY, mapCity);
+      response.textContent = `地图默认城市已设为${mapCity}。`;
+    }
   }
   if (nextWorkspace !== workspace) {
     localStorage.setItem(WORKSPACE_KEY, nextWorkspace);

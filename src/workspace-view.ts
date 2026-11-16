@@ -21,10 +21,10 @@ export const workers = [
   ["reviewer", "REVIEW", "review"],
 ] as const;
 
-export const workspaceContext = `
-<aside class="context-rail" aria-label="天气、出行和日程">
+export const workspaceContext = (mapEnabled: boolean) => `
+<aside class="context-rail" aria-label="天气和日程">
   <section class="weather">
-    <h2 class="rail-title">天气与出行 <small>示例</small></h2>
+    <h2 class="rail-title">${mapEnabled ? "天气与出行" : "天气"} <small>示例</small></h2>
     <div class="weather-now"><strong>15<sup>°C</sup></strong>${icon("cloud")}</div>
     <p>大连 · 多云 <span>湿度 54%</span></p>
     <div class="forecast">
@@ -32,14 +32,14 @@ export const workspaceContext = `
       <div><span>明天</span>${icon("sun")}<b>10° / 18°</b></div>
       <div><span>后天</span>${icon("rain")}<b>11° / 17°</b></div>
     </div>
-    <button class="route-trigger" id="open-city" type="button" aria-controls="city-view" aria-expanded="false">
+    ${mapEnabled ? `<button class="route-trigger" id="open-city" type="button" aria-controls="city-view" aria-expanded="false">
       <span class="route-action route-open-label">打开路线 ›</span>
       <span class="route-preview">
       <span class="route-summary"><span><b id="route-title"></b><small id="route-distance"></small></span><strong id="route-time"><span></span><small> 分钟</small></strong></span>
       <canvas id="route-map" width="544" height="180" aria-hidden="true"></canvas>
       <span class="route-action">收起路线 <small>© OpenStreetMap</small></span>
       </span>
-    </button>
+    </button>` : ""}
   </section>
   <section class="agenda">
     <h2 class="rail-title">今日安排 <small>示例</small></h2>

@@ -5,8 +5,8 @@ a Codex thread and again when starting a voice session. If it is missing or empt
 Jarvis uses the built-in `src-tauri/src/personality.txt`. After editing the role,
 restart the app to refresh its text runtime, or reconnect Voice to refresh the
 voice prompt. For personal questions, Codex consults the relevant parts of
-`用户档案.md` on demand. Voice delegates those questions to Codex. Map aliases
-are resolved locally; no profile is attached to ordinary messages.
+`用户档案.md` on demand. Voice delegates those questions to Codex. No profile is attached to ordinary
+messages. The in-app map and navigation are temporarily disabled.
 
 The installed app is `/Applications/Jarvis Codex.app`.
 

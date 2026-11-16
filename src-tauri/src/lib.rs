@@ -779,7 +779,7 @@ async fn terminate_runtime(state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
-const MAP_ROUTING_INSTRUCTIONS: &str = "Jarvis has its own in-app holographic map. For a user request to show a place, navigate, or display a route, return only one plain text line with this format: JARVIS_MAP followed by a space and a JSON object with a destination string and, when supplied, an origin string. Preserve full endpoint addresses, including city, district, street, house number and coordinates. This line opens the app map. Do not use browser, shell, search, or external navigation tools for these requests. If a follow-up asks for progress on an unresolved map request, use the most recent user-provided origin and destination. For other tasks, respond normally.";
+const MAP_DISABLED_INSTRUCTIONS: &str = "The in-app map and navigation are temporarily unavailable. For a request to open the in-app map or start navigation, explain that it is unavailable. Answer ordinary questions normally. Do not emit JARVIS_MAP actions.";
 
 async fn ensure_runtime(
     app: AppHandle,
@@ -808,7 +808,7 @@ async fn ensure_runtime(
         "cwd": cwd,
         "approvalPolicy": profile.approval_policy,
         "sandbox": profile.sandbox,
-        "developerInstructions": MAP_ROUTING_INSTRUCTIONS,
+        "developerInstructions": MAP_DISABLED_INSTRUCTIONS,
         "baseInstructions": format!(
             "{}\n{}\n{}",
             personality,
@@ -974,7 +974,7 @@ async fn start_codex_voice(
         "threadId": thread_id,
         "outputModality": "audio",
         "version": "v3",
-        "prompt": format!("{}\n\n你是 Jarvis 桌面助手。用户只说一个地点时，应用会直接显示该地点。不要要求用户提供起点。应用读取用户语音转录，自行查询地点、路线和拆解演示。遇到显示地图、查询路线、导航或打开部件拆解演示的请求，保持安静，等应用通过 speakable 通道发送查询结果，再用简短语音按原文播报。这些请求由应用直接处理，无需委托 Codex。用户直接问自己的公司在哪里、公司叫什么、几点上下班或喜欢喝什么，也由应用从本地档案查找并通过 speakable 发来答案；保持安静，收到后照原文播报。普通对话和其他任务照常处理。其他涉及用户本人、个人偏好、作息、长期背景或个性化建议的问题，先委托后台 Codex 在当前工作目录查阅《用户档案.md》的相关内容，等后台给出结果再回答。即使是简单问题也要先委托；不要凭印象回答、向用户重复索取或未经检查声称没有记录。不得声称正在查询或已生成路线，除非收到应用的实际结果。忽略呼吸声、杂音和没有实际内容的语音。", personality),
+        "prompt": format!("{}\n\n你是 Jarvis 桌面助手。应用内地图和导航已暂停。如果用户要求打开应用内地图或开始导航，直接用当前音色说明暂不可用。遇到打开部件拆解演示的请求，保持安静，等应用通过 speakable 通道发送结果，再用简短语音按原文播报。拆解演示由应用直接处理，无需委托 Codex。用户直接问自己的公司在哪里、公司叫什么、几点上下班或喜欢喝什么，也由应用从本地档案查找并通过 speakable 发来答案；保持安静，收到后照原文播报。普通对话和其他任务照常处理。其他涉及用户本人、个人偏好、作息、长期背景或个性化建议的问题，先委托后台 Codex 在当前工作目录查阅《用户档案.md》的相关内容，等后台给出结果再回答。即使是简单问题也要先委托；不要凭印象回答、向用户重复索取或未经检查声称没有记录。忽略呼吸声、杂音和没有实际内容的语音。", personality),
         "includeStartupContext": true,
         "clientManagedHandoffs": false,
         // STOP must be final. Flushing the tail can create a new Codex turn
