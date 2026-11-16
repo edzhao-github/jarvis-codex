@@ -1,7 +1,14 @@
+import { anatomyMarkup, anatomyRequest, mountAnatomy } from "./anatomy";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { icon, mountOrb, shortcuts, workers, workspaceContext } from "./workspace-view";
 import "./style.css";
+import "./workspace.css";
+import { cityMapMarkup, drawRoute, mountCityMap } from "./city-map";
+import { mountCitySearch } from "./city-search";
+import { mapFollowUp, mapIntent, mapIntentFromClassification, readMapAction, type MapIntent } from "./map-intent";
+import { mountSystemStats, systemStatsMarkup } from "./system-stats";
 
 type Mode = "booting" | "ready" | "voice-starting" | "listening" | "working" | "speaking" | "degraded" | "stopped";
 type Message = { id?: number | string; method?: string; params?: any };
@@ -57,6 +64,9 @@ let remoteStream: MediaStream | null = null;
 let audioContext: AudioContext | null = null;
 let microphoneAnalyser: AnalyserNode | null = null;
 let remoteAnalyser: AnalyserNode | null = null;
+const meterSamples = new Uint8Array(512);
+let lastSpeakerActivity = -Infinity;
+const voiceInUse = () => voiceStartInFlight || peer !== null || state.directVoice?.voiceActive === true;
 let userTranscriptBuffer = "";
 let assistantTranscriptBuffer = "";
 let agentMessageBuffer = "";
@@ -64,6 +74,18 @@ let voiceStartInFlight = false;
 let recoverableColdStartError = false;
 const voiceAudio = new Audio();
 voiceAudio.autoplay = true;
+let mapReplyMuted = false;
+let mapMuteUntil = 0;
+let mapLookupPending = false;
+let mapPromptQueue: { text: string; readyAt: number } | null = null;
+let lastRemoteSpeech = -Infinity;
+let microphoneHoldUntil = 0;
+let mapSpeechStartUntil = 0;
+let activeMapKey = "";
+let mapContext: MapIntent | null = null;
+let recentMapCity = "";
+let pendingMapAddress: (MapIntent & { missing: "origin" | "destination" }) | null = null;
+let intentRevision = 0;
 const previewParams = new URLSearchParams(window.location.search);
 const tauriInternals = (window as Window & { __TAURI_INTERNALS__?: { invoke?: unknown } }).__TAURI_INTERNALS__;
 const currentWindow = typeof tauriInternals?.invoke === "function" ? getCurrentWindow() : null;
@@ -76,49 +98,67 @@ if (!currentWindow) {
   document.documentElement.classList.add("visual-preview");
   if (previewParams.get("grid") === "1") document.documentElement.classList.add("transparency-grid");
 }
-if (currentWindow) {
-  void currentWindow.onCloseRequested(async (event) => {
-    event.preventDefault();
-    await currentWindow.hide();
-  });
-}
 
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
-<main class="shell" data-mode="booting">
+<main class="shell" data-mode="booting" data-view="workspace">
   <canvas id="particle-field" width="1440" height="900" aria-hidden="true"></canvas>
   <header class="topbar hud-panel">
-    <div class="brand"><i></i><strong>JARVIS</strong><span></span><em>CODEX VOICE SYSTEM</em></div>
-    <div class="status"><i></i><b id="mode-label">INITIALIZING</b></div>
-    <button id="settings" class="icon-button" aria-label="设置">⌘</button>
+    <div class="brand"><i aria-hidden="true">◈</i><div><strong>J.A.R.V.I.S</strong><em>PERSONAL LOCAL AGENT</em></div></div>
+    <div class="clock"><time id="clock"></time><span id="calendar-date"></span></div>
+    <div class="topbar-status">
+      ${systemStatsMarkup}
+      <div class="status" role="status"><span id="runtime-label">本地</span><i></i><b id="mode-label">INITIALIZING</b></div>
+    </div>
+    <div class="window-actions">
+      <button id="switch-view" class="icon-button" aria-label="切换到机械猫" title="切换到机械猫">${icon("view")}</button>
+      <button id="settings" class="icon-button" aria-label="设置" title="设置">${icon("settings")}</button>
+    </div>
   </header>
-  <section class="stage">
+  <section class="stage" aria-label="贾维斯核心">
+    <div class="workspace-core">
+      <div class="core-status"><span></span><b id="core-state">SYSTEM BOOT</b><span></span></div>
+      <canvas id="core-orb" aria-hidden="true"></canvas>
+      ${cityMapMarkup}
+      ${anatomyMarkup}
+    </div>
     <div class="avatar-window">
       <div class="character-aura"></div>
       <div class="character-rig">
         <div class="assembly-orbits" aria-hidden="true"><i></i><i></i><i></i></div>
         <div class="armor-shards" aria-hidden="true"></div>
-        <img id="jarvis-character" class="helmet-character" src="/assets/jarvis-character-v2.png" alt="Jarvis holographic helmet">
+        <img id="jarvis-character" class="helmet-character" src="/assets/jarvis-character-cat.png" alt="Jarvis mechanical cat">
         <div class="helmet-scan"></div>
         <div class="assembly-flash" aria-hidden="true"></div>
       </div>
-      <canvas id="wave" width="900" height="120"></canvas>
     </div>
     <div class="identity"><span>JARVIS CORE</span><b id="identity-state">SYSTEM BOOT</b></div>
   </section>
-  <aside class="workers">
-    <article class="worker active" data-role="orchestrator"><span>›_</span><div><b>Codex</b><small>Connecting</small></div><i></i></article>
-    <article class="worker" data-role="developer"><span>⌬</span><div><b>Developer</b><small>Standby</small></div><i></i></article>
-    <article class="worker" data-role="researcher"><span>⌕</span><div><b>Researcher</b><small>Standby</small></div><i></i></article>
-    <article class="worker" data-role="reviewer"><span>✓</span><div><b>Reviewer</b><small>Standby</small></div><i></i></article>
+  <aside class="workers" aria-label="Agent 调度与工作汇报">
+    <section>
+      <h2 class="rail-title">Agent 调度</h2>
+      ${workers.map(([role, name, glyph], index) => `
+        <article class="worker${index === 0 ? " active" : ""}" data-role="${role}">
+          <span>${icon(glyph)}</span><div><b>${name}</b><small>${index === 0 ? "连接中" : "待命"}</small></div><i></i>
+        </article>`).join("")}
+    </section>
+    <section class="work-report">
+      <h2 class="rail-title">工作汇报</h2>
+      <div class="work-count"><strong id="completed-count">0</strong><span>本次启动已完成</span></div>
+      <p id="work-status">等待指令</p>
+      <canvas id="wave" width="540" height="126" aria-hidden="true"></canvas>
+      <small>语音信号</small>
+    </section>
   </aside>
-  <section class="dialogue hud-panel">
-    <b>YOU</b><p id="user-transcript">“嗨，Jarvis”</p>
-    <b class="jarvis">JARVIS</b><p id="assistant-transcript">正在连接 Codex 原生任务线程…</p>
+  ${workspaceContext}
+  <section class="dialogue hud-panel" aria-label="最新对话">
+    <div class="dialogue-user"><b>YOU</b><p id="user-transcript">“嗨，Jarvis”</p></div>
+    <div class="dialogue-reply"><b class="jarvis">JARVIS</b><p id="assistant-transcript">正在启动贾维斯…</p></div>
   </section>
   <footer class="controls">
-    <button id="mic" class="control mic"><span aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="8.25" y="3" width="7.5" height="11.5" rx="3.75"></rect><path d="M5.5 11.25v.75a6.5 6.5 0 0 0 13 0v-.75M12 18.5V22M8.75 22h6.5"></path></svg></span><b>CODEX VOICE</b><small>V3 WEBRTC · DIRECT</small></button>
-    <form id="command-form" class="command"><input id="command-input" aria-label="文字指令" placeholder="Voice 不可用时，发送本地 Codex 文字任务…" autocomplete="off"><button>EXECUTE</button></form>
-    <button id="stop" class="control stop"><span aria-hidden="true"><svg viewBox="0 0 24 24"><rect class="stop-mark" x="6.5" y="6.5" width="11" height="11" rx="1.8"></rect></svg></span><b>STOP</b><small>INTERRUPT ALL</small></button>
+    <div class="quick-actions" aria-label="快捷指令">${shortcuts.map(([label, prompt]) => `<button type="button" data-prompt="${prompt}">${label}</button>`).join("")}</div>
+    <button id="mic" class="control mic" type="button" aria-label="切换语音" title="切换语音"><span aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="8.25" y="3" width="7.5" height="11.5" rx="3.75"></rect><path d="M5.5 11.25v.75a6.5 6.5 0 0 0 13 0v-.75M12 18.5V22M8.75 22h6.5"></path></svg></span></button>
+    <form id="command-form" class="command"><input id="command-input" aria-label="文字指令" placeholder="说「Hey Jarvis」，或在这里打字" autocomplete="off"><button type="submit" aria-label="发送指令" title="发送指令">↵</button></form>
+    <button id="stop" class="control stop" type="button" aria-label="停止语音和任务" title="停止语音和任务"><span aria-hidden="true"><svg viewBox="0 0 24 24"><rect class="stop-mark" x="6.5" y="6.5" width="11" height="11" rx="1.8"></rect></svg></span></button>
   </footer>
   <div id="degraded-banner" class="degraded-banner" hidden><b>JARVIS NEEDS PERMISSION</b><span id="degraded-copy">首次使用请允许麦克风和语音识别。</span></div>
   <dialog id="approval"><h2>高风险操作确认</h2><p id="approval-copy">Codex 请求执行需要确认的动作。</p><div><button id="deny">拒绝</button><button id="approve">允许一次</button></div></dialog>
@@ -136,6 +176,271 @@ const settings = $("#settings-dialog") as HTMLDialogElement;
 const characterRig = $<HTMLElement>(".character-rig");
 const hoverControls = $<HTMLElement>(".controls");
 const settingsButton = $<HTMLButtonElement>("#settings");
+const switchViewButton = $<HTMLButtonElement>("#switch-view");
+const commandInput = $<HTMLInputElement>("#command-input");
+const dateFormatter = new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", weekday: "short" });
+const timeFormatter = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+let completedCount = 0;
+
+function updateClock() {
+  const now = new Date();
+  const clock = $<HTMLTimeElement>("#clock");
+  clock.dateTime = now.toISOString();
+  clock.textContent = timeFormatter.format(now);
+  $("#calendar-date").textContent = dateFormatter.format(now);
+}
+updateClock();
+window.setInterval(updateClock, 1000);
+mountSystemStats(currentWindow ? () => invoke("system_stats") : null, voiceInUse);
+
+mountOrb($<HTMLCanvasElement>("#core-orb"), () => state, voiceInUse);
+
+const cityView = $<HTMLElement>("#city-view");
+const routeButton = $<HTMLButtonElement>("#open-city");
+const closeCity = $<HTMLButtonElement>("#close-city");
+const city = mountCityMap($<HTMLCanvasElement>("#city-canvas"), $<HTMLElement>("#city-start"), $<HTMLElement>("#city-end"), $<HTMLButtonElement>("#orbit-city"));
+
+const anatomy = mountAnatomy($<HTMLElement>(".anatomy-view"), () => {
+  closeAnatomy();
+  commandInput.focus();
+});
+
+function closeAnatomy() {
+  anatomy.close();
+  shell.removeAttribute("data-anatomy-open");
+}
+
+function handleAnatomy(text: string) {
+  const subject = anatomyRequest(text);
+  if (subject === undefined) return false;
+  ++intentRevision;
+  citySearch.close();
+  pendingMapAddress = null;
+  const name = subject ? anatomy.open(subject) : null;
+  if (name) {
+    if (!cityView.hidden) setCityOpen(false, false);
+    if (shell.dataset.view === "avatar") switchViewButton.click();
+    shell.setAttribute("data-anatomy-open", "");
+    $<HTMLButtonElement>(".anatomy-view [data-explode]").focus();
+  }
+  const message = name ? `已打开${name}的拆解演示。` : subject
+    ? "这个对象还没有拆解演示。现在可以查看咖啡机或机械键盘。"
+    : "你想拆解什么？现在可以查看咖啡机或机械键盘。";
+  response.textContent = message;
+  speakMapPrompt(message);
+  return true;
+}
+
+const citySearch = mountCitySearch((scene, origin, destination) => {
+  if (cityView.hidden) setCityOpen(true, false);
+  pendingMapAddress = null;
+  mapContext = { destination: destination.name, origin: origin?.name };
+  recentMapCity = destination.city ?? origin?.city ?? "";
+  const originLabel = origin ? origin.name + (origin.approximate ? "附近" : "") : null;
+  const destinationLabel = destination.name + (destination.approximate ? "附近" : "");
+  city.setScene(scene, originLabel, destinationLabel);
+  drawRoute($<HTMLCanvasElement>("#route-map"), scene);
+  $("#city-location").textContent = destination.area || "在线地图";
+  $("#city-title").textContent = destinationLabel;
+  const nearby = [origin?.approximate ? `起点按「${origin.name}」附近定位` : "",
+    origin && destination.approximate ? `终点按「${destination.name}」附近定位` : ""].filter(Boolean);
+  response.textContent = destination.approximate
+    ? `已显示「${destination.name}」附近的地图。`
+    : `已显示「${destination.name}」的全息地图。`;
+
+  $("#route-title").textContent = origin ? `去${destinationLabel}` : destinationLabel;
+  const time = $<HTMLElement>("#route-time");
+  time.hidden = !origin;
+  if (origin) {
+    const minutes = Math.max(1, Math.round(scene.durationSeconds / 60));
+    const distance = (scene.distanceMeters / 1000).toFixed(1);
+    $("#city-distance").textContent = `驾车约 ${minutes} 分钟 · ${distance} km`;
+    $("#route-distance").textContent = `驾车 · ${distance} km`;
+    $("#route-time span").textContent = String(minutes);
+    const summary = `路线已规划，约${distance}公里，驾车约${minutes}分钟。${nearby.length ? `${nearby.join("，")}。` : ""}`;
+    response.textContent = summary;
+    speakMapPrompt(summary);
+  } else {
+    $("#city-distance").textContent = "";
+    $("#route-distance").textContent = "在线地图";
+    speakMapPrompt(response.textContent);
+  }
+}, (message, failed, missing) => {
+  response.textContent = message;
+  if (!failed) return;
+  if (missing) pendingMapAddress = { ...citySearch.input(), missing };
+  speakMapPrompt(message);
+});
+
+function speakMapPrompt(text: string) {
+  mapLookupPending = false;
+  activeMapKey = "";
+  if (!currentWindow || !peer || state.manualStop) {
+    clearMapMute();
+    return;
+  }
+  const now = performance.now();
+  muteMapReply();
+  mapPromptQueue = { text, readyAt: now + 750 };
+}
+
+function playMapPrompt(text: string) {
+  assistantTranscriptBuffer = "";
+  mapSpeechStartUntil = performance.now() + 4000;
+  syncMicrophone();
+  clearMapMute();
+  void invoke("speak_map_prompt", { text }).catch((error) => {
+    mapSpeechStartUntil = 0;
+    syncMicrophone();
+    console.warn("Jarvis 地图语音播报失败", error);
+  });
+}
+
+function syncMicrophone(now = performance.now()) {
+  const track = microphoneStream?.getAudioTracks()[0];
+  if (!track) return;
+  const enabled = now >= Math.max(microphoneHoldUntil, mapSpeechStartUntil);
+  if (track.enabled !== enabled) track.enabled = enabled;
+}
+
+function setCityOpen(open: boolean, focus = true) {
+  if (open) closeAnatomy();
+  cityView.hidden = !open;
+  shell.toggleAttribute("data-city-open", open);
+  routeButton.setAttribute("aria-expanded", String(open));
+  if (open) {
+    city.show();
+    if (focus) closeCity.focus();
+  } else {
+    ++intentRevision;
+    pendingMapAddress = null;
+    citySearch.close();
+    mapLookupPending = false;
+    activeMapKey = "";
+    mapPromptQueue = null;
+    city.hide();
+    if (focus) routeButton.focus();
+  }
+}
+
+function isOpenMapCommand(text: string) {
+  const command = text.normalize("NFKC").replace(/\s+/g, "")
+    .replace(/^(?:(?:嗨|嘿|Hey)[,，、]*)?(?:Jarvis|贾维斯|喵维斯)[,，、:：]*/i, "")
+    .replace(/[。！!？?，,]+$/, "");
+  return /^(?:请|麻烦)?(?:帮我|给我)?(?:打开|显示|查看|看看)(?:一下)?(?:立体|全息)?(?:路线|地图)(?:吧|一下)?$/.test(command);
+}
+
+function openRecentMap() {
+  if (mapContext) {
+    if (shell.dataset.view === "avatar") switchViewButton.click();
+    setCityOpen(true);
+    return;
+  }
+  if (mapLookupPending) return;
+  commandInput.focus();
+  const message = "请说出要查看的地点，或提供起点和终点来规划路线。";
+  response.textContent = message;
+  speakMapPrompt(message);
+}
+
+function openMapRequest(intent: MapIntent) {
+  const key = JSON.stringify([intent.origin ?? "", intent.destination].map((place) =>
+    place.normalize("NFKC").replace(/\s+/g, "").toLowerCase()));
+  if (activeMapKey === key) return;
+  activeMapKey = key;
+  pendingMapAddress = null;
+  mapPromptQueue = null;
+  mapLookupPending = true;
+  if (peer) muteMapReply();
+  if (shell.dataset.view === "avatar") switchViewButton.click();
+  void citySearch.show(intent, recentMapCity);
+}
+
+let mapClassification: Promise<MapIntent | null> = Promise.resolve(null);
+async function interpretMapRequest(text: string, revision: number): Promise<MapIntent | null> {
+  const direct = mapIntent(text);
+  const followUp = mapFollowUp(text);
+  if (direct && !followUp) return direct;
+  if (!currentWindow) return direct;
+  mapClassification = mapClassification.then(() => {
+    if (revision !== intentRevision || state.manualStop) return null;
+    const context = followUp === "area" ? pendingMapAddress : followUp ? pendingMapAddress ?? mapContext : null;
+    return invoke<MapIntent | null>("classify_map_intent", { text, context })
+      .then(intent => mapIntentFromClassification(intent, text, Boolean(context?.origin)))
+      .catch(() => direct);
+  });
+  return mapClassification;
+}
+
+async function handleSpokenCommand(text: string) {
+  const connection = peer;
+  if (!connection || state.manualStop || !text || /^(?:[嗯啊哦呃唔]+[。！!，,]*|\[[a-z _-]+\]?)$/i.test(text)) return;
+  const revision = ++intentRevision;
+  if (handleAnatomy(text)) return;
+  if (isOpenMapCommand(text)) {
+    openRecentMap();
+    return;
+  }
+  // Hold likely map replies while semantic classification runs.
+  if (mapFollowUp(text) || mapIntent(text)) {
+    muteMapReply();
+    mapMuteUntil = performance.now() + 16_000;
+  }
+  const intent = await interpretMapRequest(text, revision);
+  if (revision === intentRevision && !intent && !mapLookupPending && !mapPromptQueue) clearMapMute();
+  if (!intent || peer !== connection || state.manualStop || revision !== intentRevision) return;
+  transcript.textContent = text;
+  openMapRequest(intent);
+}
+
+function muteMapReply() {
+  mapReplyMuted = true;
+  mapMuteUntil = performance.now() + 2400;
+  // Let audio that's already audible finish before suppressing the map reply.
+  if (performance.now() - lastRemoteSpeech >= 750) voiceAudio.muted = true;
+}
+
+function clearMapMute() {
+  mapReplyMuted = false;
+  voiceAudio.muted = false;
+}
+
+routeButton.addEventListener("click", () => {
+  if (!cityView.hidden) {
+    setCityOpen(false);
+    return;
+  }
+  ++intentRevision;
+  openRecentMap();
+});
+closeCity.addEventListener("click", () => setCityOpen(false));
+$("#reset-city").addEventListener("click", city.reset);
+const citySource = $<HTMLButtonElement>("#city-source");
+const citySourceDetails = $<HTMLElement>("#city-source-details");
+citySource.addEventListener("click", () => {
+  citySourceDetails.hidden = !citySourceDetails.hidden;
+  citySource.setAttribute("aria-expanded", String(!citySourceDetails.hidden));
+});
+cityView.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") setCityOpen(false);
+});
+
+switchViewButton.addEventListener("click", () => {
+  const view = shell.dataset.view === "workspace" ? "avatar" : "workspace";
+  shell.dataset.view = view;
+  const label = view === "avatar" ? "返回工作台" : "切换到机械猫";
+  switchViewButton.title = label;
+  switchViewButton.setAttribute("aria-label", label);
+  if (view === "avatar") prepareVisualParticles();
+});
+
+for (const button of document.querySelectorAll<HTMLButtonElement>(".quick-actions button")) {
+  button.addEventListener("click", () => {
+    commandInput.value = button.dataset.prompt ?? "";
+    commandInput.focus();
+    commandInput.setSelectionRange(commandInput.value.length, commandInput.value.length);
+  });
+}
 let controlsHideTimer: number | undefined;
 let characterActionTimer: number | undefined;
 
@@ -161,12 +466,12 @@ function triggerCharacterAction(action: CharacterAction, duration = 1100) {
   characterActionTimer = window.setTimeout(() => shell.classList.remove(`action-${action}`), duration);
 }
 
-for (const area of [characterRig, hoverControls, settingsButton]) {
+for (const area of [characterRig, hoverControls, settingsButton, switchViewButton]) {
   area.addEventListener("pointerenter", revealControls);
   area.addEventListener("pointerleave", scheduleControlsHide);
 }
 shell.addEventListener("focusin", (event) => {
-  if (event.target instanceof Element && (hoverControls.contains(event.target) || settingsButton.contains(event.target))) revealControls();
+  if (event.target instanceof Element && (hoverControls.contains(event.target) || settingsButton.contains(event.target) || switchViewButton.contains(event.target))) revealControls();
 });
 shell.addEventListener("focusout", scheduleControlsHide);
 
@@ -180,8 +485,11 @@ const copy: Record<Mode, [string, string]> = {
 
 function setMode(mode: Mode) {
   state.mode = mode; shell.setAttribute("data-mode", mode);
+  if (!currentWindow) mic.classList.toggle("active", mode === "listening" || mode === "speaking");
   $("#mode-label").textContent = copy[mode][0]; $("#identity-state").textContent = copy[mode][1];
-  if (mode === "voice-starting") {
+  $("#core-state").textContent = copy[mode][1];
+  $("#work-status").textContent = mode === "working" ? "Codex 正在执行任务" : mode === "stopped" ? "任务已中断" : "等待指令";
+  if (mode === "voice-starting" && shell.dataset.view === "avatar") {
     shell.classList.remove("is-forming");
     void shell.clientWidth;
     shell.classList.add("is-forming");
@@ -198,20 +506,37 @@ function roleOf(params: any) {
   return text.includes("research") ? "researcher" : text.includes("review") ? "reviewer" :
     text.includes("developer") || text.includes("commandexecution") || text.includes("filechange") ? "developer" : "orchestrator";
 }
-function drawWave() {
-  const canvas = $("#wave") as HTMLCanvasElement, context = canvas.getContext("2d")!;
+const waveCanvas = $<HTMLCanvasElement>("#wave");
+const waveContext = waveCanvas.getContext("2d")!;
+let lastWaveFrame = -Infinity;
+
+function drawWave(now: number) {
+  requestAnimationFrame(drawWave);
+  if (shell.dataset.view !== "workspace" || document.hidden || now - lastWaveFrame < (voiceInUse() ? 80 : 40)) return;
+  lastWaveFrame = now;
+  const canvas = waveCanvas;
+  const context = waveContext;
   context.clearRect(0, 0, canvas.width, canvas.height);
   const time = performance.now() / 370, amplitude = 5 + state.level * 42 + (state.mode === "speaking" ? 22 : 0);
-  context.beginPath();
-  for (let x = 0; x <= canvas.width; x += 3) {
-    const y = canvas.height / 2 + (Math.sin(x * .085 + time * 2.2) + Math.sin(x * .031 - time) * .55) * amplitude * Math.sin(x / canvas.width * Math.PI) * .48;
-    x ? context.lineTo(x, y) : context.moveTo(x, y);
+  for (let layer = 0; layer < (voiceInUse() ? 2 : 4); layer++) {
+    context.beginPath();
+    for (let x = 0; x <= canvas.width; x += 3) {
+      const envelope = .28 + .72 * Math.sin(x / canvas.width * Math.PI);
+      const y = canvas.height / 2 + (Math.sin(x * .034 + time * 2.2 + layer * .8) +
+        Math.sin(x * .014 - time + layer) * .55) * (amplitude + 6) * envelope;
+      if (x === 0) context.moveTo(x, y);
+      else context.lineTo(x, y);
+    }
+    context.strokeStyle = state.mode === "working" ? "#ffc08a" : state.mode === "stopped" ? "#fc7069" : "#99dbff";
+    context.globalAlpha = .8 - layer * .15;
+    context.shadowColor = context.strokeStyle;
+    context.shadowBlur = voiceInUse() ? 0 : 9;
+    context.lineWidth = 1.6;
+    context.stroke();
   }
-  context.strokeStyle = state.mode === "working" ? "#ff9d2e" : state.mode === "stopped" ? "#ff3d33" : "#22c7ff";
-  context.shadowColor = context.strokeStyle; context.shadowBlur = 15; context.lineWidth = 2; context.stroke();
-  state.level *= .9; requestAnimationFrame(drawWave);
+  context.globalAlpha = 1;
 }
-drawWave();
+requestAnimationFrame(drawWave);
 
 type VisualParticle = {
   fromX: number;
@@ -292,6 +617,7 @@ function syncParticleCanvasSize() {
 }
 
 function prepareVisualParticles() {
+  if (shell.dataset.view !== "avatar") return;
   if (!characterImage.naturalWidth) return;
   syncParticleCanvasSize();
   const sample = document.createElement("canvas");
@@ -402,6 +728,10 @@ function drawFormationEnergy(now: number, rawProgress: number) {
 }
 
 function drawParticleField(now: number) {
+  if (shell.dataset.view !== "avatar") {
+    requestAnimationFrame(drawParticleField);
+    return;
+  }
   particleContext.clearRect(0, 0, particleCanvas.width, particleCanvas.height);
   if (visualParticles.length) {
     const rawProgress = (now - formationStartedAt) / FORMATION_DURATION;
@@ -454,43 +784,58 @@ requestAnimationFrame(drawParticleField);
 
 function analyserLevel(analyser: AnalyserNode | null) {
   if (!analyser) return 0;
-  const samples = new Uint8Array(analyser.fftSize);
-  analyser.getByteTimeDomainData(samples);
+  analyser.getByteTimeDomainData(meterSamples);
   let energy = 0;
-  for (const sample of samples) {
+  for (const sample of meterSamples) {
     const normalized = (sample - 128) / 128;
     energy += normalized * normalized;
   }
-  return Math.min(1, Math.sqrt(energy / samples.length) * 5);
+  return Math.min(1, Math.sqrt(energy / meterSamples.length) * 5);
 }
 
 function updateAudioMeters() {
+  const now = performance.now();
   if (!currentWindow) {
-    const time = performance.now();
     state.level = state.mode === "speaking"
-      ? .52 + Math.sin(time / 125) * .16
+      ? .52 + Math.sin(now / 125) * .16
       : state.mode === "working"
-        ? .2 + Math.sin(time / 310) * .08
+        ? .2 + Math.sin(now / 310) * .08
         : state.mode === "listening"
-          ? .08 + Math.sin(time / 430) * .035
+          ? .08 + Math.sin(now / 430) * .035
           : 0;
+  } else {
+    const remoteLevel = analyserLevel(remoteAnalyser);
+    if (remoteLevel > .045) lastRemoteSpeech = now;
+    if (mapReplyMuted && now - lastRemoteSpeech >= 750) voiceAudio.muted = true;
+    if (mapPromptQueue && now >= mapPromptQueue.readyAt &&
+        now - lastRemoteSpeech >= 750) {
+      const { text } = mapPromptQueue;
+      mapPromptQueue = null;
+      playMapPrompt(text);
+    } else if (mapReplyMuted && !mapLookupPending && !mapPromptQueue &&
+        now > mapMuteUntil && now - lastRemoteSpeech >= 750) {
+      clearMapMute();
+    }
+    const speakerLevel = voiceAudio.muted ? 0 : remoteLevel;
+    if (speakerLevel > .045) {
+      microphoneHoldUntil = Math.max(microphoneHoldUntil, now + 900);
+      mapSpeechStartUntil = 0;
+    }
+    syncMicrophone(now);
+    state.level = Math.max(state.level * .75, analyserLevel(microphoneAnalyser), speakerLevel);
+    if (speakerLevel > .08) lastSpeakerActivity = now;
+    if (state.directVoice?.voiceActive && !state.agentWorking && !state.manualStop) {
+      if (speakerLevel > .08 && state.mode === "listening") setMode("speaking");
+      if (state.mode === "speaking" && now - lastSpeakerActivity > 340) setMode("listening");
+    }
+  }
+
+  if (shell.dataset.view === "avatar" && !document.hidden) {
     shell.style.setProperty("--voice-pulse", String(1 + state.level * .026));
     shell.style.setProperty("--voice-glow", String(.45 + state.level * .55));
-    requestAnimationFrame(updateAudioMeters);
-    return;
   }
-  const micLevel = analyserLevel(microphoneAnalyser);
-  const speakerLevel = analyserLevel(remoteAnalyser);
-  state.level = Math.max(state.level, micLevel, speakerLevel);
-  shell.style.setProperty("--voice-pulse", String(1 + state.level * .026));
-  shell.style.setProperty("--voice-glow", String(.45 + state.level * .55));
-  if (state.directVoice?.voiceActive && !state.agentWorking) {
-    if (speakerLevel > 0.08 && state.mode !== "speaking") setMode("speaking");
-    if (speakerLevel < 0.025 && state.mode === "speaking") setMode("listening");
-  }
-  requestAnimationFrame(updateAudioMeters);
 }
-updateAudioMeters();
+window.setInterval(updateAudioMeters, 50);
 
 function updateVoiceInfo(info: DirectVoice) {
   state.directVoice = info;
@@ -537,9 +882,15 @@ async function handle(message: Message) {
   } else if (method === "thread/realtime/transcript/delta") {
     const delta = typeof params?.delta === "string" ? params.delta : "";
     if (params?.role === "assistant") {
+      if (mapReplyMuted) return;
+      microphoneHoldUntil = performance.now() + 900;
+      syncMicrophone();
       assistantTranscriptBuffer += delta;
       response.textContent = assistantTranscriptBuffer;
-      if (!state.agentWorking) setMode("speaking");
+      if (!state.agentWorking && !state.manualStop && state.mode === "listening") {
+        lastSpeakerActivity = performance.now();
+        setMode("speaking");
+      }
     } else {
       userTranscriptBuffer += delta;
       transcript.textContent = userTranscriptBuffer;
@@ -548,13 +899,16 @@ async function handle(message: Message) {
   } else if (method === "thread/realtime/transcript/done") {
     const text = typeof params?.text === "string" ? params.text.trim() : "";
     if (params?.role === "assistant") {
-      if (text) response.textContent = text;
+      if (text && !mapReplyMuted) response.textContent = text;
       assistantTranscriptBuffer = "";
-      if (!state.agentWorking) setMode("listening");
     } else {
-      if (text) transcript.textContent = text;
+      const utterance = text || userTranscriptBuffer.trim();
       userTranscriptBuffer = "";
-      if (text) triggerCharacterAction("acknowledge");
+      if (utterance) {
+        transcript.textContent = utterance;
+        triggerCharacterAction("acknowledge");
+        if (params?.role === "user") void handleSpokenCommand(utterance);
+      }
     }
   } else if (method === "thread/realtime/itemAdded") {
     const itemType = String(params?.item?.type ?? "");
@@ -591,8 +945,13 @@ async function handle(message: Message) {
   } else if (method === "item/agentMessage/delta") {
     const delta = typeof params?.delta === "string" ? params.delta : "";
     agentMessageBuffer += delta;
-    if (agentMessageBuffer) response.textContent = agentMessageBuffer;
+    if (!mapReplyMuted && agentMessageBuffer && !"JARVIS_MAP ".startsWith(agentMessageBuffer) && !agentMessageBuffer.startsWith("JARVIS_MAP ")) {
+      response.textContent = agentMessageBuffer;
+    }
   } else if (method === "turn/completed") {
+    if (state.agentWorking && !state.manualStop && params?.turn?.status === "completed") {
+      $("#completed-count").textContent = String(++completedCount);
+    }
     state.agentWorking = false;
     if (!state.manualStop) triggerCharacterAction("complete", 1400);
     setMode(state.manualStop ? "stopped" : state.directVoice?.voiceActive ? "listening" : "ready");
@@ -607,7 +966,14 @@ async function handle(message: Message) {
     setWorker(roleOf(params), "Complete", false);
     if (params?.item?.type === "agentMessage") {
       const text = typeof params.item.text === "string" ? params.item.text : agentMessageBuffer;
-      if (text) response.textContent = text;
+      const action = readMapAction(text);
+      if (action && !state.manualStop) {
+        const request = transcript.textContent ?? "";
+        const intent = mapIntentFromClassification(action, request, Boolean((pendingMapAddress ?? mapContext)?.origin));
+        if (intent && !peer && !mapLookupPending) openMapRequest(intent);
+      } else if (text && !action && !mapReplyMuted) {
+        response.textContent = text;
+      }
     }
   }
 }
@@ -632,13 +998,21 @@ async function waitForIceGathering(connection: RTCPeerConnection) {
 function attachAnalyser(stream: MediaStream, target: "microphone" | "remote") {
   audioContext ??= new AudioContext();
   const analyser = audioContext.createAnalyser();
-  analyser.fftSize = 512;
+  analyser.fftSize = meterSamples.length;
   audioContext.createMediaStreamSource(stream).connect(analyser);
   if (target === "microphone") microphoneAnalyser = analyser;
   else remoteAnalyser = analyser;
 }
 
 function cleanupPeer() {
+  ++intentRevision;
+  mapPromptQueue = null;
+  lastRemoteSpeech = -Infinity;
+  microphoneHoldUntil = 0;
+  mapSpeechStartUntil = 0;
+  userTranscriptBuffer = "";
+  assistantTranscriptBuffer = "";
+  clearMapMute();
   peer?.close();
   peer = null;
   microphoneStream?.getTracks().forEach((track) => track.stop());
@@ -649,6 +1023,11 @@ function cleanupPeer() {
   voiceAudio.srcObject = null;
   microphoneAnalyser = null;
   remoteAnalyser = null;
+  lastSpeakerActivity = -Infinity;
+  state.level = 0;
+  const context = audioContext;
+  audioContext = null;
+  void context?.close().catch(() => {});
 }
 
 const sleep = (milliseconds: number) =>
@@ -683,7 +1062,9 @@ async function acquireMicrophone(coldStart: boolean) {
 async function startDirectVoice({ coldStart = false } = {}) {
   if (!currentWindow) {
     setMode("voice-starting");
-    window.setTimeout(() => setMode("listening"), FORMATION_DURATION);
+    window.setTimeout(() => {
+      if (state.mode === "voice-starting") setMode("listening");
+    }, FORMATION_DURATION);
     return;
   }
   if (voiceStartInFlight || peer || state.directVoice?.voiceActive) return;
@@ -717,11 +1098,15 @@ async function startDirectVoice({ coldStart = false } = {}) {
     connection.addTrack(track, microphoneStream);
     connection.createDataChannel("oai-events");
     connection.ontrack = (event) => {
+      if (peer !== connection || event.track.kind !== "audio") return;
       remoteStream = event.streams[0] ?? new MediaStream([event.track]);
       voiceAudio.srcObject = remoteStream;
       attachAnalyser(remoteStream, "remote");
-      void audioContext?.resume();
-      void voiceAudio.play();
+      void audioContext?.resume().catch(() => {});
+      void voiceAudio.play().catch((error) => {
+        if (peer !== connection) return;
+        response.textContent = `语音播放失败：${String(error)}`;
+      });
     };
     connection.onconnectionstatechange = () => {
       if (connection.connectionState === "failed") {
@@ -767,6 +1152,15 @@ async function stopDirectVoice() {
 
 if (currentWindow) {
   await listen<Message>("codex-event", ({ payload }) => void handle(payload));
+  await currentWindow.onCloseRequested(async (event) => {
+    event.preventDefault();
+    await currentWindow.hide();
+    if (state.directVoice?.voiceActive || peer) {
+      cleanupPeer();
+      try { await stopDirectVoice(); } catch (error) { console.warn(error); }
+    }
+    await armWakeListener();
+  });
   await listen<WakeStatus>("jarvis-wake-status", ({ payload }) => {
     state.wake = payload;
     $("#wake-auth").textContent = payload.ready
@@ -806,36 +1200,66 @@ $("#command-form").addEventListener("submit", async (event) => {
   state.manualStop = false;
   transcript.textContent = text;
   input.value = "";
+  if (handleAnatomy(text)) return;
+  const revision = ++intentRevision;
+  const direct = mapIntent(text);
+  if (isOpenMapCommand(text)) {
+    openRecentMap();
+    return;
+  }
+  if (direct && (!currentWindow || !mapFollowUp(text))) {
+    openMapRequest(direct);
+    return;
+  }
   if (!currentWindow) {
     response.textContent = "视觉预览：文字任务已切换为 Codex 工作态。";
     setMode("working");
     return;
   }
-  if (state.directVoice?.voiceActive) {
-    response.textContent = "已将文字作为用户话语注入当前 Codex Voice 会话。";
-    await invoke("append_codex_voice_text", { text });
-    return;
+  try {
+    if (!state.session) {
+      state.session = await invoke<Session>("start_jarvis", {
+        cwd: workspace,
+        threadId: savedThreadId(),
+        permissionMode,
+      });
+      localStorage.setItem(`${THREAD_KEY_PREFIX}${workspace}`, state.session.threadId);
+      $("#thread-id").textContent = state.session.threadId;
+      $("#workspace").textContent = state.session.cwd;
+    }
+    const intent = await interpretMapRequest(text, revision);
+    if (revision !== intentRevision || state.manualStop) return;
+    if (intent) {
+      openMapRequest(intent);
+      return;
+    }
+    if (state.directVoice?.voiceActive) {
+      await invoke("append_codex_voice_text", { text });
+      return;
+    }
+    setMode("working");
+    await invoke("send_text", { text });
+  } catch (error) {
+    if (revision === intentRevision && !state.manualStop) response.textContent = String(error);
   }
-  if (!state.session) {
-    state.session = await invoke<Session>("start_jarvis", {
-      cwd: workspace,
-      threadId: savedThreadId(),
-      permissionMode,
-    });
-    localStorage.setItem(`${THREAD_KEY_PREFIX}${workspace}`, state.session.threadId);
-    $("#thread-id").textContent = state.session.threadId;
-    $("#workspace").textContent = state.session.cwd;
-  }
-  setMode("working");
-  await invoke("send_text", { text });
 });
 mic.addEventListener("click", () => {
+  if (!currentWindow && ["voice-starting", "listening", "speaking"].includes(state.mode)) {
+    setMode("ready");
+    return;
+  }
   if (state.directVoice?.voiceActive || peer) void stopDirectVoice();
   else void startDirectVoice();
 });
 $("#stop").addEventListener("click", async () => {
   triggerCharacterAction("error", 700);
   state.manualStop = true; setMode("stopped");
+  ++intentRevision;
+  pendingMapAddress = null;
+  citySearch.close();
+  mapLookupPending = false;
+  activeMapKey = "";
+  mapPromptQueue = null;
   state.agentWorking = false;
   for (const role of ["orchestrator", "developer", "researcher", "reviewer"]) setWorker(role, "Interrupted", false);
   if (!currentWindow) return;
@@ -959,6 +1383,7 @@ if (currentWindow) {
     }
   } catch (error) { setMode("stopped"); response.textContent = `启动失败：${String(error)}`; }
 } else {
+  $("#runtime-label").textContent = "预览";
   workspace = "Visual preview · native systems disconnected";
   $("#thread-id").textContent = "Preview only";
   $("#workspace").textContent = workspace;
@@ -969,12 +1394,12 @@ if (currentWindow) {
   response.textContent = visualPreviewMode === "voice-starting"
     ? "正在从粒子中重构 Jarvis 核心…"
     : visualPreviewMode === "working"
-      ? "Codex 正在执行任务，装甲能量切换为工作态。"
+      ? "Codex 正在执行任务，核心切换为工作态。"
       : visualPreviewMode === "speaking"
-        ? "语音输出正在驱动角色光效与声波。"
+        ? "语音输出正在驱动核心光效与声波。"
         : visualPreviewMode === "stopped"
           ? "所有任务已中断，等待下一次唤醒。"
-          : "Jarvis 视觉系统预览就绪。";
+          : "在，先生。今天有什么安排？";
   setMode(visualPreviewMode);
   if (["acknowledge", "approval", "complete", "error"].includes(previewActionValue ?? "")) {
     window.setTimeout(() => triggerCharacterAction(previewActionValue as CharacterAction, 1800), 180);

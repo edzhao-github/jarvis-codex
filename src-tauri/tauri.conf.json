@@ -19,14 +19,16 @@
         "minWidth": 960,
         "minHeight": 620,
         "center": true,
-        "decorations": false,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
         "transparent": true,
         "shadow": false,
         "resizable": true
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; media-src 'self' blob:; font-src 'self'"
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost https://tiles.openfreemap.org https://photon.komoot.io https://routing.openstreetmap.de; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; media-src 'self' blob:; font-src 'self'"
     }
   },
   "bundle": {

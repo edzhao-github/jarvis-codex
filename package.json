@@ -15,7 +15,9 @@
     "check": "npm run wake:build && npm test && npm run web:build && cargo fmt --manifest-path src-tauri/Cargo.toml --check && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.11.1"
+    "@mapbox/vector-tile": "^3.0.0",
+    "@tauri-apps/api": "^2.11.1",
+    "pbf": "^5.1.2"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",
