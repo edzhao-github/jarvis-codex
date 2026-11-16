@@ -1,4 +1,5 @@
 mod system_stats;
+mod thread_state;
 mod user_profile;
 
 use serde::{Deserialize, Serialize};
@@ -6,6 +7,7 @@ use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     fs,
+    io::{BufRead, Seek, SeekFrom},
     path::PathBuf,
     process::Stdio,
     sync::{
@@ -23,6 +25,8 @@ use tokio::{
 
 struct AppState {
     runtime: Mutex<Option<Arc<CodexRuntime>>>,
+    runtime_start: Mutex<()>,
+    voice_transition: Mutex<()>,
     cold_wake_pending: AtomicBool,
     background_start: bool,
     wake_enabled: AtomicBool,
@@ -375,6 +379,16 @@ impl CodexRuntime {
     }
 
     async fn request(&self, method: &str, params: Value) -> Result<Value, String> {
+        self.request_with_timeout(method, params, Duration::from_secs(90))
+            .await
+    }
+
+    async fn request_with_timeout(
+        &self,
+        method: &str,
+        params: Value,
+        wait: Duration,
+    ) -> Result<Value, String> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (sender, receiver) = oneshot::channel();
         self.pending.lock().await.insert(id, sender);
@@ -385,10 +399,13 @@ impl CodexRuntime {
             self.pending.lock().await.remove(&id);
             return Err(error);
         }
-        timeout(Duration::from_secs(90), receiver)
-            .await
-            .map_err(|_| format!("{method} 响应超时"))?
-            .map_err(|_| format!("{method} 响应通道关闭"))?
+        match timeout(wait, receiver).await {
+            Ok(result) => result.map_err(|_| format!("{method} 响应通道关闭"))?,
+            Err(_) => {
+                self.pending.lock().await.remove(&id);
+                Err(format!("{method} 响应超时"))
+            }
+        }
     }
 
     async fn notify(&self, method: &str, params: Value) -> Result<(), String> {
@@ -577,53 +594,58 @@ fn start_wake_supervisor(app: AppHandle) {
             state
                 .wake_pid
                 .store(child.id().unwrap_or(0), Ordering::SeqCst);
-            let mut processed = 0usize;
+            let mut offset = 0;
 
             loop {
-                let content = fs::read_to_string(&event_file).unwrap_or_default();
-                let lines: Vec<&str> = content.lines().collect();
-                for line in lines.iter().skip(processed) {
-                    let Ok(message) = serde_json::from_str::<Value>(line) else {
-                        continue;
-                    };
-                    match message.get("type").and_then(Value::as_str) {
-                        Some("authorization") => {
-                            let authorization = message
-                                .get("status")
-                                .and_then(Value::as_str)
-                                .unwrap_or("unknown");
-                            *state.wake_authorization.write().await = authorization.to_owned();
-                            // `notDetermined` means the helper has just asked
-                            // macOS for access. Keep it alive so the native
-                            // permission sheet can complete its callback.
-                            if matches!(authorization, "denied" | "restricted") {
-                                state.wake_enabled.store(false, Ordering::SeqCst);
+                let events = fs::File::open(&event_file).and_then(|file| {
+                    let mut reader = std::io::BufReader::new(file);
+                    reader.seek(SeekFrom::Start(offset))?;
+                    Ok(reader)
+                });
+                if let Ok(mut events) = events {
+                    let mut line = Vec::new();
+                    while next_wake_event(&mut events, &mut line, &mut offset) {
+                        let Ok(message) = serde_json::from_slice::<Value>(&line) else {
+                            continue;
+                        };
+                        match message.get("type").and_then(Value::as_str) {
+                            Some("authorization") => {
+                                let authorization = message
+                                    .get("status")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("unknown");
+                                *state.wake_authorization.write().await = authorization.to_owned();
+                                // `notDetermined` means the helper has just asked
+                                // macOS for access. Keep it alive so the native
+                                // permission sheet can complete its callback.
+                                if matches!(authorization, "denied" | "restricted") {
+                                    state.wake_enabled.store(false, Ordering::SeqCst);
+                                }
                             }
+                            Some("ready") => {
+                                state.wake_ready.store(true, Ordering::SeqCst);
+                            }
+                            Some("wake") => {
+                                woke = true;
+                                state.wake_enabled.store(false, Ordering::SeqCst);
+                                state.wake_ready.store(false, Ordering::SeqCst);
+                                raise_jarvis_window(&app);
+                            }
+                            Some("error") => {
+                                *state.wake_authorization.write().await = message
+                                    .get("message")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("wake listener error")
+                                    .to_owned();
+                            }
+                            _ => {}
                         }
-                        Some("ready") => {
-                            state.wake_ready.store(true, Ordering::SeqCst);
+                        let _ = app.emit("jarvis-wake-status", wake_status_value(&state).await);
+                        if woke {
+                            break;
                         }
-                        Some("wake") => {
-                            woke = true;
-                            state.wake_enabled.store(false, Ordering::SeqCst);
-                            state.wake_ready.store(false, Ordering::SeqCst);
-                            raise_jarvis_window(&app);
-                        }
-                        Some("error") => {
-                            *state.wake_authorization.write().await = message
-                                .get("message")
-                                .and_then(Value::as_str)
-                                .unwrap_or("wake listener error")
-                                .to_owned();
-                        }
-                        _ => {}
-                    }
-                    let _ = app.emit("jarvis-wake-status", wake_status_value(&state).await);
-                    if woke {
-                        break;
                     }
                 }
-                processed = lines.len();
                 if woke || !state.wake_enabled.load(Ordering::SeqCst) {
                     break;
                 }
@@ -658,6 +680,17 @@ fn start_wake_supervisor(app: AppHandle) {
         }
         let _ = app.emit("jarvis-wake-status", wake_status_value(&state).await);
     });
+}
+
+fn next_wake_event(reader: &mut impl BufRead, line: &mut Vec<u8>, offset: &mut u64) -> bool {
+    line.clear();
+    match reader.read_until(b'\n', line) {
+        Ok(bytes) if line.ends_with(b"\n") => {
+            *offset += bytes as u64;
+            true
+        }
+        _ => false,
+    }
 }
 
 #[tauri::command]
@@ -785,13 +818,29 @@ async fn ensure_runtime(
     app: AppHandle,
     state: &State<'_, AppState>,
     cwd: &str,
-    resume_thread_id: Option<&str>,
+    legacy_thread_id: Option<&str>,
+    new_thread: bool,
     permission_mode: PermissionMode,
 ) -> Result<Arc<CodexRuntime>, String> {
+    let _launch = state.runtime_start.lock().await;
     let cwd = validated_workspace(cwd)?;
+    let state_path = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("active-threads.json");
+    let mut saved = thread_state::load(&state_path)?;
+    let resume_thread_id = if new_thread {
+        None
+    } else {
+        saved
+            .get(&cwd)
+            .map(String::as_str)
+            .or_else(|| legacy_thread_id.filter(|id| !id.trim().is_empty()))
+    };
     let existing = { state.runtime.lock().await.clone() };
     if let Some(existing) = existing {
-        if existing.permission_mode == permission_mode && existing.workspace == cwd {
+        if !new_thread && existing.permission_mode == permission_mode && existing.workspace == cwd {
             return Ok(existing);
         }
         terminate_runtime(state).await?;
@@ -820,14 +869,8 @@ async fn ensure_runtime(
     {
         let mut resume_options = thread_options.clone();
         resume_options["threadId"] = Value::String(thread_id.to_owned());
-        match runtime.request("thread/resume", resume_options).await {
-            Ok(resumed) => resumed,
-            Err(_) => {
-                let mut start_options = thread_options;
-                start_options["ephemeral"] = Value::Bool(false);
-                runtime.request("thread/start", start_options).await?
-            }
-        }
+        runtime.request("thread/resume", resume_options).await
+            .map_err(|error| format!("无法续接上次会话：{error}。可以重试；如果会话已归档，请先取消归档，或在设置中选择「新开线程」。"))?
     } else {
         let mut start_options = thread_options;
         start_options["ephemeral"] = Value::Bool(false);
@@ -838,6 +881,11 @@ async fn ensure_runtime(
         .and_then(Value::as_str)
         .ok_or("Codex 未返回 threadId")?
         .to_owned();
+    if resume_thread_id.is_some_and(|id| id != thread_id) {
+        return Err("Codex 返回了不同的会话 ID，已保留原会话。".to_owned());
+    }
+    saved.insert(cwd, thread_id.clone());
+    thread_state::save(&state_path, &saved)?;
     *runtime.thread_id.write().await = Some(thread_id.clone());
     *state.runtime.lock().await = Some(runtime.clone());
     Ok(runtime)
@@ -939,10 +987,50 @@ async fn start_jarvis(
     cwd: String,
     thread_id: Option<String>,
     permission_mode: PermissionMode,
+    new_thread: Option<bool>,
 ) -> Result<SessionInfo, String> {
-    let runtime = ensure_runtime(app, &state, &cwd, thread_id.as_deref(), permission_mode).await?;
+    let runtime = ensure_runtime(
+        app,
+        &state,
+        &cwd,
+        thread_id.as_deref(),
+        new_thread.unwrap_or(false),
+        permission_mode,
+    )
+    .await?;
     let thread_id = runtime.thread().await?;
     Ok(SessionInfo { thread_id, cwd })
+}
+
+fn voice_history(timeline: &Value) -> Vec<Value> {
+    // Keep recent complete segments within a small startup context budget.
+    let Some(entries) = timeline["data"].as_array() else {
+        return Vec::new();
+    };
+    let mut remaining = 2_400;
+    let mut history = Vec::new();
+    for entry in entries.iter().rev() {
+        let item = &entry["item"];
+        if entry["type"] != "realtime" || item["type"] != "transcriptSegment" {
+            continue;
+        }
+        let (Some(role @ ("user" | "assistant")), Some(text)) =
+            (item["role"].as_str(), item["text"].as_str().map(str::trim))
+        else {
+            continue;
+        };
+        let length = text.chars().count();
+        if length == 0 {
+            continue;
+        }
+        if length > remaining {
+            break;
+        }
+        remaining -= length;
+        history.push(json!({"role": role, "text": text}));
+    }
+    history.reverse();
+    history
 }
 
 #[tauri::command]
@@ -955,10 +1043,19 @@ async fn start_codex_voice(
     sdp: String,
     voice: Option<String>,
 ) -> Result<DirectVoiceInfo, String> {
+    let _voice = state.voice_transition.lock().await;
     if !sdp.starts_with("v=0") {
         return Err("WebRTC SDP offer 无效".to_owned());
     }
-    let runtime = ensure_runtime(app, &state, &cwd, thread_id.as_deref(), permission_mode).await?;
+    let runtime = ensure_runtime(
+        app,
+        &state,
+        &cwd,
+        thread_id.as_deref(),
+        false,
+        permission_mode,
+    )
+    .await?;
     let thread_id = runtime.thread().await?;
     let personality = user_profile::personality(&runtime.workspace)?;
     if runtime.voice_active.load(Ordering::SeqCst) {
@@ -970,6 +1067,15 @@ async fn start_codex_voice(
     runtime.voice_active.store(false, Ordering::SeqCst);
     *runtime.realtime_session_id.write().await = None;
 
+    let history = runtime
+        .request_with_timeout(
+            "thread/timeline/list",
+            json!({"threadId": thread_id, "limit": 40}),
+            Duration::from_secs(2),
+        )
+        .await
+        .map(|timeline| voice_history(&timeline))
+        .unwrap_or_default();
     let mut params = json!({
         "threadId": thread_id,
         "outputModality": "audio",
@@ -984,6 +1090,9 @@ async fn start_codex_voice(
         "codexResponseHandoffMode": "commentary",
         "transport": {"type": "webrtc", "sdp": sdp}
     });
+    if !history.is_empty() {
+        params["initialItems"] = json!(history);
+    }
     if let Some(voice) = voice {
         const SUPPORTED: &[&str] = &[
             "alloy", "arbor", "ash", "ballad", "breeze", "cedar", "coral", "cove", "echo", "ember",
@@ -993,8 +1102,14 @@ async fn start_codex_voice(
             params["voice"] = Value::String(voice);
         }
     }
-    if let Err(error) = runtime.request("thread/realtime/start", params).await {
+    if let Err(error) = runtime
+        .request_with_timeout("thread/realtime/start", params, Duration::from_secs(12))
+        .await
+    {
         *runtime.voice_phase.write().await = "error".to_owned();
+        if error == "thread/realtime/start 响应超时" {
+            return Err("语音服务响应超时".to_owned());
+        }
         return Err(format!("Codex Voice V3 启动失败：{error}"));
     }
     Ok(direct_voice_info(&state).await)
@@ -1002,13 +1117,18 @@ async fn start_codex_voice(
 
 #[tauri::command]
 async fn stop_codex_voice(state: State<'_, AppState>) -> Result<DirectVoiceInfo, String> {
+    let _voice = state.voice_transition.lock().await;
     let Ok(runtime) = runtime(&state).await else {
         return Ok(direct_voice_info(&state).await);
     };
     let thread_id = runtime.thread().await?;
     *runtime.voice_phase.write().await = "stopping".to_owned();
     let result = runtime
-        .request("thread/realtime/stop", json!({"threadId": thread_id}))
+        .request_with_timeout(
+            "thread/realtime/stop",
+            json!({"threadId": thread_id}),
+            Duration::from_secs(4),
+        )
         .await;
     runtime.voice_active.store(false, Ordering::SeqCst);
     *runtime.voice_phase.write().await = "closed".to_owned();
@@ -1057,6 +1177,27 @@ async fn speak_map_failure(state: State<'_, AppState>, text: String) -> Result<(
     }
     #[cfg(not(target_os = "macos"))]
     speak_map_prompt(state, text).await
+}
+
+#[tauri::command]
+async fn apply_voice_personality(state: State<'_, AppState>) -> Result<(), String> {
+    let _voice = state.voice_transition.lock().await;
+    let runtime = runtime(&state).await?;
+    let thread_id = runtime.thread().await?;
+    let personality = user_profile::personality(&runtime.workspace)?;
+    runtime
+        .request_with_timeout(
+            "thread/realtime/appendText",
+            json!({
+                "threadId": thread_id,
+                "role": "developer",
+                "text": format!("从下一条用户消息起，按下列喵维斯设定交流。现在请等待用户说话。\n\n{personality}")
+            }),
+            Duration::from_secs(4),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| format!("语音设定加载失败：{error}"))
 }
 
 #[tauri::command]
@@ -1153,7 +1294,76 @@ async fn resolve_server_request(
 
 #[tauri::command]
 async fn shutdown(state: State<'_, AppState>) -> Result<(), String> {
+    let _launch = state.runtime_start.lock().await;
     terminate_runtime(&state).await
+}
+
+#[tauri::command]
+async fn release_idle_runtime(
+    window: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    if window.is_visible().map_err(|error| error.to_string())? {
+        return Ok(false);
+    }
+    let _voice = state.voice_transition.lock().await;
+    let _launch = state.runtime_start.lock().await;
+    let Ok(runtime) = runtime(&state).await else {
+        return Ok(false);
+    };
+    if runtime.voice_active.load(Ordering::SeqCst)
+        || runtime.active_turn.read().await.is_some()
+        || !runtime.pending.lock().await.is_empty()
+    {
+        return Ok(false);
+    }
+    let thread_id = runtime.thread().await?;
+    let Ok(thread) = runtime
+        .request_with_timeout(
+            "thread/read",
+            json!({"threadId": thread_id, "includeTurns": false}),
+            Duration::from_secs(2),
+        )
+        .await
+    else {
+        return Ok(false);
+    };
+    // Codex can return a path for a new thread before writing its history.
+    // Keep that runtime until its thread can be resumed from disk.
+    if thread
+        .pointer("/thread/status/type")
+        .and_then(Value::as_str)
+        != Some("idle")
+        || !thread
+            .pointer("/thread/path")
+            .and_then(Value::as_str)
+            .is_some_and(|path| std::path::Path::new(path).is_file())
+    {
+        return Ok(false);
+    }
+    let Ok(terminals) = runtime
+        .request_with_timeout(
+            "thread/backgroundTerminals/list",
+            json!({"threadId": thread_id, "limit": 1}),
+            Duration::from_secs(2),
+        )
+        .await
+    else {
+        return Ok(false);
+    };
+    if !terminals
+        .get("data")
+        .and_then(Value::as_array)
+        .is_some_and(Vec::is_empty)
+        || window.is_visible().map_err(|error| error.to_string())?
+        || runtime.voice_active.load(Ordering::SeqCst)
+        || runtime.active_turn.read().await.is_some()
+        || !runtime.pending.lock().await.is_empty()
+    {
+        return Ok(false);
+    }
+    terminate_runtime(&state).await?;
+    Ok(true)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1167,6 +1377,8 @@ pub fn run() {
     tauri::Builder::default()
         .manage(AppState {
             runtime: Mutex::new(None),
+            runtime_start: Mutex::new(()),
+            voice_transition: Mutex::new(()),
             cold_wake_pending: AtomicBool::new(cold_wake_pending),
             background_start,
             wake_enabled: AtomicBool::new(false),
@@ -1192,10 +1404,12 @@ pub fn run() {
             read_user_profile,
             start_codex_voice,
             stop_codex_voice,
+            apply_voice_personality,
             append_codex_voice_text,
             send_text,
             stop_all,
             resolve_server_request,
+            release_idle_runtime,
             shutdown
         ])
         .setup(move |app| {
@@ -1227,4 +1441,49 @@ pub fn run() {
             #[cfg(not(target_os = "macos"))]
             let _ = (app, event);
         });
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    #[test]
+    fn wake_reader_retries_a_partially_written_event() {
+        let first = b"{\"type\":\"ready\"}\n";
+        let second = "{\"type\":\"wake\",\"phrase\":\"喵维斯\"}\n".as_bytes();
+        let mut events = [first.as_slice(), second].concat();
+        let complete_len = events.len();
+        events.truncate(first.len() + second.len() - 2);
+
+        let mut offset = 0;
+        let mut line = Vec::new();
+        let mut reader = events.as_slice();
+        assert!(next_wake_event(&mut reader, &mut line, &mut offset));
+        assert_eq!(line, first);
+        assert!(!next_wake_event(&mut reader, &mut line, &mut offset));
+        assert_eq!(offset as usize, first.len());
+
+        events.extend_from_slice(&second[second.len() - 2..]);
+        let mut reader = &events[offset as usize..];
+        assert!(next_wake_event(&mut reader, &mut line, &mut offset));
+        assert_eq!(line, second);
+        assert_eq!(offset as usize, complete_len);
+    }
+
+    #[test]
+    fn recent_voice_history_preserves_roles_and_ignores_other_timeline_items() {
+        let timeline = json!({"data": [
+            {"type": "realtime", "item": {"type": "transcriptSegment", "role": "user", "text": "纸鹤计划先做两份。"}},
+            {"type": "turn", "item": {"type": "agentMessage", "text": "独立文字回答"}},
+            {"type": "realtime", "item": {"type": "realtimeSessionClosed"}},
+            {"type": "realtime", "item": {"type": "transcriptSegment", "role": "assistant", "text": "收到。"}},
+        ]});
+        assert_eq!(
+            voice_history(&timeline),
+            vec![
+                json!({"role": "user", "text": "纸鹤计划先做两份。"}),
+                json!({"role": "assistant", "text": "收到。"}),
+            ]
+        );
+    }
 }
