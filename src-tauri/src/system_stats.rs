@@ -62,25 +62,47 @@ mod macos {
 
         SystemStats {
             cpu_percent: cpu_percent(top),
-            memory_percent: memory_size.as_deref().and_then(|total| memory_percent(top, total)),
+            memory_percent: memory_size
+                .as_deref()
+                .and_then(|total| memory_percent(top, total)),
             received_bytes,
             sent_bytes,
-            battery_percent: battery.lines().find(|line| line.contains("InternalBattery"))
-                .and_then(|line| line.split_whitespace().find_map(|word| word.strip_suffix("%;")?.parse().ok())),
-            plugged_in: battery.lines().next().is_some_and(|line| line.contains("AC Power")),
+            battery_percent: battery
+                .lines()
+                .find(|line| line.contains("InternalBattery"))
+                .and_then(|line| {
+                    line.split_whitespace()
+                        .find_map(|word| word.strip_suffix("%;")?.parse().ok())
+                }),
+            plugged_in: battery
+                .lines()
+                .next()
+                .is_some_and(|line| line.contains("AC Power")),
         }
     }
 
     fn cpu_percent(top: &str) -> Option<f64> {
-        let idle: f64 = top.lines().rev().find(|line| line.starts_with("CPU usage:"))?
-            .split_whitespace().rev().nth(1)?.strip_suffix('%')?.parse().ok()?;
+        let idle: f64 = top
+            .lines()
+            .rev()
+            .find(|line| line.starts_with("CPU usage:"))?
+            .split_whitespace()
+            .rev()
+            .nth(1)?
+            .strip_suffix('%')?
+            .parse()
+            .ok()?;
         Some((100.0 - idle).clamp(0.0, 100.0))
     }
 
     fn memory_percent(top: &str, total: &str) -> Option<f64> {
         let total: f64 = total.trim().parse().ok()?;
-        let used = top.lines().rev().find_map(|line| line.strip_prefix("PhysMem: "))?
-            .split_whitespace().next()?;
+        let used = top
+            .lines()
+            .rev()
+            .find_map(|line| line.strip_prefix("PhysMem: "))?
+            .split_whitespace()
+            .next()?;
         let (number, unit) = used.split_at(used.len().checked_sub(1)?);
         let scale = match unit {
             "B" => 1.0,
@@ -107,12 +129,16 @@ mod macos {
             let [name, _, link, .., incoming, _, _, outgoing, _] = fields.as_slice() else {
                 continue;
             };
-            if !name.strip_prefix("en").is_some_and(|index| !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit()))
-                || !link.starts_with("<Link#")
+            if !name.strip_prefix("en").is_some_and(|index| {
+                !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
+            }) || !link.starts_with("<Link#")
             {
                 continue;
             }
-            let (Ok(incoming), Ok(outgoing)) = (incoming.parse::<u64>(), outgoing.parse::<u64>()) else { continue };
+            let (Ok(incoming), Ok(outgoing)) = (incoming.parse::<u64>(), outgoing.parse::<u64>())
+            else {
+                continue;
+            };
             found = true;
             received = received.saturating_add(incoming);
             sent = sent.saturating_add(outgoing);
