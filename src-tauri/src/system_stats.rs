@@ -50,9 +50,10 @@ mod macos {
     }
 
     pub(super) async fn sample() -> SystemStats {
-        let (top, memory_size, network, battery) = tokio::join!(
+        let (top, memory_size, vm, network, battery) = tokio::join!(
             output("/usr/bin/top", &["-l", "2", "-s", "1", "-n", "0"]),
             output("/usr/sbin/sysctl", &["-n", "hw.memsize"]),
+            output("/usr/bin/vm_stat", &[]),
             output("/usr/sbin/netstat", &["-ibn"]),
             output("/usr/bin/pmset", &["-g", "batt"]),
         );
@@ -64,7 +65,7 @@ mod macos {
             cpu_percent: cpu_percent(top),
             memory_percent: memory_size
                 .as_deref()
-                .and_then(|total| memory_percent(top, total)),
+                .and_then(|total| memory_percent(vm.as_deref()?, total)),
             received_bytes,
             sent_bytes,
             battery_percent: battery
@@ -95,28 +96,39 @@ mod macos {
         Some((100.0 - idle).clamp(0.0, 100.0))
     }
 
-    fn memory_percent(top: &str, total: &str) -> Option<f64> {
-        let total: f64 = total.trim().parse().ok()?;
-        let used = top
+    fn memory_percent(vm: &str, total: &str) -> Option<f64> {
+        let total: u64 = total.trim().parse().ok()?;
+        let page_size: u64 = vm
             .lines()
-            .rev()
-            .find_map(|line| line.strip_prefix("PhysMem: "))?
+            .next()?
+            .split_once("page size of ")?
+            .1
             .split_whitespace()
-            .next()?;
-        let (number, unit) = used.split_at(used.len().checked_sub(1)?);
-        let scale = match unit {
-            "B" => 1.0,
-            "K" => 1024.0,
-            "M" => 1024.0 * 1024.0,
-            "G" => 1024.0 * 1024.0 * 1024.0,
-            "T" => 1024.0 * 1024.0 * 1024.0 * 1024.0,
-            _ => return None,
-        };
-        if total <= 0.0 {
+            .next()?
+            .parse()
+            .ok()?;
+        if total == 0 || page_size == 0 {
             return None;
         }
-        let used = number.parse::<f64>().ok()? * scale;
-        Some((used / total * 100.0).clamp(0.0, 100.0))
+        let pages = |name: &str| -> Option<u64> {
+            vm.lines()
+                .find_map(|line| line.strip_prefix(name))?
+                .trim()
+                .trim_end_matches('.')
+                .parse()
+                .ok()
+        };
+        // Activity Monitor separates reusable file cache from used physical memory.
+        // vm_stat's displayed free count excludes speculative pages. Include those
+        // as available too. The complement retains wired/compressed and newer
+        // kernel allocations (e.g. tag storage), without double-counting them.
+        let available = pages("Pages free:")?
+            .checked_add(pages("Pages speculative:")?)?
+            .checked_add(pages("File-backed pages:")?)?
+            .checked_add(pages("Pages purgeable:")?)?
+            .checked_mul(page_size)?;
+        let used = total.checked_sub(available)?;
+        Some(used as f64 / total as f64 * 100.0)
     }
 
     fn network_bytes(network: &str) -> Option<(u64, u64)> {
@@ -144,5 +156,82 @@ mod macos {
             sent = sent.saturating_add(outgoing);
         }
         found.then_some((received, sent))
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::memory_percent;
+
+        fn snapshot(page_size: u64) -> String {
+            format!(
+                "Mach Virtual Memory Statistics: (page size of {page_size} bytes)\n\
+                 Pages free: 10000.\n\
+                 Pages speculative: 2000.\n\
+                 Pages purgeable: 10000.\n\
+                 File-backed pages: 650000.\n\
+                 Anonymous pages: 600000.\n\
+                 Pages wired down: 150000.\n\
+                 Pages occupied by compressor: 60000.\n\
+                 Pages stored in compressor: 160000.\n"
+            )
+        }
+
+        #[test]
+        fn excludes_available_pages_but_retains_kernel_overhead() {
+            let vm = snapshot(16384);
+            let total = 25769803776.0;
+            let actual = memory_percent(&vm, "25769803776\n").unwrap();
+            let expected = (total - 672000.0 * 16384.0) / total * 100.0;
+            assert!((actual - expected).abs() < 0.000001);
+            // Compressed logical contents are not extra physical memory.
+            assert_eq!(
+                memory_percent(&vm, "25769803776"),
+                memory_percent(&vm.replace("160000", "400000"), "25769803776")
+            );
+            // More cached files reduce used memory, rather than inflating it.
+            assert!(
+                memory_percent(&vm.replace("650000", "750000"), "25769803776").unwrap() < actual
+            );
+        }
+
+        #[test]
+        fn respects_intel_page_size() {
+            assert_eq!(memory_percent(&snapshot(4096), "5505024000"), Some(50.0));
+        }
+
+        #[test]
+        fn invalid_samples_are_unavailable_not_misleading_percentages() {
+            let vm = snapshot(16384);
+            assert_eq!(memory_percent("", "25769803776"), None);
+            assert_eq!(memory_percent(&vm, "0"), None);
+            assert_eq!(memory_percent(&vm, "invalid"), None);
+            assert_eq!(memory_percent(&snapshot(0), "25769803776"), None);
+            assert_eq!(
+                memory_percent(&vm.replace("Pages free:", "Missing:"), "25769803776"),
+                None
+            );
+            assert_eq!(
+                memory_percent(&vm.replace("650000", "18446744073709551615"), "25769803776"),
+                None
+            );
+        }
+
+        #[test]
+        fn live_vm_sample_is_parseable() {
+            let vm = std::process::Command::new("/usr/bin/vm_stat")
+                .env("LC_ALL", "C")
+                .output()
+                .unwrap();
+            let total = std::process::Command::new("/usr/sbin/sysctl")
+                .args(["-n", "hw.memsize"])
+                .output()
+                .unwrap();
+            let percent = memory_percent(
+                std::str::from_utf8(&vm.stdout).unwrap(),
+                std::str::from_utf8(&total.stdout).unwrap(),
+            )
+            .unwrap();
+            assert!((0.0..=100.0).contains(&percent));
+            eprintln!("Live used memory: {percent:.1}%");
+        }
     }
 }

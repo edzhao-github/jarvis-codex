@@ -1,7 +1,7 @@
 export const systemStatsMarkup = `
   <dl class="system-stats" aria-label="本机系统指标">
     <div title="CPU 总使用率"><dt>CPU</dt><dd id="stat-cpu">—</dd></div>
-    <div title="物理内存使用率"><dt>MEM</dt><dd id="stat-memory">—</dd></div>
+    <div title="已使用内存 / 物理内存（不含可回收文件缓存）"><dt>MEM</dt><dd id="stat-memory">—</dd></div>
     <div class="network-stat" title="网络下载 / 上传速率"><dt>NET</dt><dd id="stat-network">—</dd></div>
     <div title="电池电量 · 闪电表示接入电源"><dt>BAT</dt><dd id="stat-battery">—</dd></div>
   </dl>`;
