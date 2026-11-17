@@ -57,12 +57,18 @@
   text-shadow: none;
   font-size: 17px;
 }
-[data-view=workspace] .brand em {
-  display: block;
+[data-view=workspace] .brand-caption {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   color: var(--muted);
   font-size: 8px;
   margin-top: 4px;
   white-space: nowrap;
+}
+[data-view=workspace] #app-version {
+  font-size: inherit;
+  letter-spacing: .05em;
 }
 [data-view=workspace] .clock {
   display: flex;

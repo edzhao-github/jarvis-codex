@@ -5,7 +5,7 @@ import { stripTypeScriptTypes } from "node:module";
 
 const source = await readFile(new URL("../src/profile-map.ts", import.meta.url), "utf8");
 const js = stripTypeScriptTypes(source);
-const {answerProfileQuestion, profileQuestion, resolveProfileMap} = await import(`data:text/javascript;base64,${Buffer.from(js).toString("base64")}`);
+const {answerProfileQuestion, profileQuestion, profileSection, resolveProfileMap} = await import(`data:text/javascript;base64,${Buffer.from(js).toString("base64")}`);
 const profile = `# 测试档案\n- 公司名称：示例公司。（测试）\n- 公司地址：测试路185号。（测试）\n- 居住小区：测试小区。（测试）\n- 上班时间：09:00—18:00。\n- 喜欢：测试偏好。`;
 
 test("a spoken company address question uses the saved address and preserves navigation requests", () => {
@@ -22,6 +22,22 @@ test("common personal questions return the requested profile field", () => {
   assert.equal(answerProfileQuestion(profileQuestion("我的公司叫什么？"), profile), "你的公司叫示例公司。");
   assert.equal(answerProfileQuestion(profileQuestion("我几点上班？"), profile), "档案里记的上班时间是09:00—18:00。");
   assert.equal(answerProfileQuestion(profileQuestion("我平时喜欢喝什么？"), "# 偏好\n- 喜欢喝果汁。"), "你喜欢喝果汁。");
+});
+
+test("typed and spoken name questions read only the matching profile chapter", () => {
+  const cats = profileQuestion("你还记得我家的猫叫什么名字吗？");
+  assert.equal(cats, "cats");
+  assert.equal(profileSection(cats), "pets");
+  assert.equal(answerProfileQuestion(cats, "猫小雨（橘猫）、猫小云（白猫）、狗麦穗（小狗）"), "档案里记录的猫叫小雨、小云。");
+  assert.equal(profileQuestion("我家的宠物都叫什么？"), "pets");
+  assert.equal(profileQuestion("你知道我家那三只猫的名字吗？"), "cats");
+  assert.equal(profileQuestion("我养的狗叫什么？"), "dogs");
+  assert.equal(profileQuestion("猫叫什么？"), null);
+  assert.equal(answerProfileQuestion(cats, "猫咪尚无记录。"), "档案里还没有记录你的猫名字。");
+  const name = profileQuestion("你知道我是谁吗？");
+  assert.equal(profileSection(name), "about");
+  assert.equal(answerProfileQuestion(name, "- 姓名：示例人物。"), "档案里记的是示例人物。");
+  assert.equal(answerProfileQuestion(name, "（尚未提供。）"), "档案里还没有记录你的姓名。");
 });
 
 test("explicit company and home aliases resolve from saved fields only", () => {

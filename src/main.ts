@@ -1,5 +1,6 @@
-import { answerProfileQuestion, profileQuestion, resolveProfileMap } from "./profile-map";
+import { answerProfileQuestion, profileQuestion, profileSection, resolveProfileMap } from "./profile-map";
 import { anatomyMarkup, anatomyRequest, mountAnatomy } from "./anatomy";
+import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -10,6 +11,7 @@ import { cityMapMarkup, drawRoute, mountCityMap } from "./city-map";
 import { mountCitySearch } from "./city-search";
 import { completeMapEndpoint, failedMapFollowUp, mapDestinationChange, mapFollowUp, mapIntent, mapIntentFromClassification, readMapAction, type MapIntent, type PendingMapAddress } from "./map-intent";
 import { mountSystemStats, systemStatsMarkup } from "./system-stats";
+import { version as configuredVersion } from "../src-tauri/tauri.conf.json";
 
 type Mode = "booting" | "ready" | "voice-starting" | "listening" | "working" | "speaking" | "degraded" | "stopped";
 type Message = { id?: number | string; method?: string; params?: any };
@@ -112,7 +114,13 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
 <main class="shell" data-mode="booting" data-view="workspace">
   <canvas id="particle-field" width="1440" height="900" aria-hidden="true"></canvas>
   <header class="topbar hud-panel">
-    <div class="brand"><i aria-hidden="true">◈</i><div><strong>J.A.R.V.I.S</strong><em>PERSONAL LOCAL AGENT</em></div></div>
+    <div class="brand">
+      <i aria-hidden="true">◈</i>
+      <div>
+        <strong>J.A.R.V.I.S</strong>
+        <div class="brand-caption"><em>PERSONAL LOCAL AGENT</em><small id="app-version" title="应用版本"></small></div>
+      </div>
+    </div>
     <div class="clock"><time id="clock"></time><span id="calendar-date"></span></div>
     <div class="topbar-status">
       ${systemStatsMarkup}
@@ -175,6 +183,13 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
 </main>`;
 
 const $ = <T extends Element>(selector: string) => document.querySelector<T>(selector)!;
+const appVersion = $("#app-version");
+appVersion.textContent = `v${configuredVersion}`;
+if (currentWindow) {
+  void getVersion().then((version) => {
+    appVersion.textContent = `v${version}`;
+  }, () => { /* Keep the build version if the native API is unavailable. */ });
+}
 const shell = $<HTMLElement>(".shell");
 const transcript = $("#user-transcript");
 const response = $("#assistant-transcript");
@@ -458,10 +473,10 @@ async function handleProfileQuestion(text: string, revision: number): Promise<bo
   }
   let message: string;
   try {
-    const profile = await invoke<string | null>("read_user_profile", { cwd: workspace });
+    const profile = await invoke<string | null>("read_user_profile", { cwd: workspace, section: profileSection(question) });
     message = answerProfileQuestion(question, profile);
-  } catch {
-    message = "这次没能读取《用户档案.md》，请检查文件后再试。";
+  } catch (error) {
+    message = `这次没能读取用户档案。${String(error)}`;
   }
   if (revision !== intentRevision || state.manualStop) return true;
   response.textContent = message;
