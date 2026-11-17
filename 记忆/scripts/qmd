@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+export QMD_CONFIG_DIR="$root/.qmd/config"
+export XDG_CACHE_HOME="$root/.qmd/cache"
+executable="$root/.qmd/node_modules/.bin/qmd"
+if [ ! -x "$executable" ]; then
+    printf '%s\n' '请先按 家庭管家Wiki构建指南.md 安装此知识库的 QMD。' >&2
+    exit 127
+fi
+cd "$root"
+exec "$executable" "$@"
