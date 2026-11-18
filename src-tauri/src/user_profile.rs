@@ -171,7 +171,7 @@ fn section_page(
     Ok((path, page))
 }
 
-fn wiki_enabled(root: &Path) -> Result<bool, String> {
+pub(crate) fn wiki_enabled(root: &Path) -> Result<bool, String> {
     match read_reference(root, MODE)?
         .as_ref()
         .map(|page| page.body.trim())
@@ -180,6 +180,34 @@ fn wiki_enabled(root: &Path) -> Result<bool, String> {
         Some("legacy") | None => Ok(false),
         _ => Err(format!("Wiki 读取标记无效：{MODE}")),
     }
+}
+
+pub(crate) fn is_profile_page(relative: &str) -> bool {
+    matches!(relative, HOUSEHOLD | PREFERENCES | WORK | "用户档案索引.md")
+}
+
+pub(crate) fn read_wiki_page(root: &Path, relative: &str) -> Result<String, String> {
+    if !wiki_enabled(root)? {
+        return Err("当前工作区未启用 Wiki 读取。".into());
+    }
+    let path = Path::new(relative);
+    if path.extension().and_then(|extension| extension.to_str()) != Some("md")
+        || relative
+            .split('/')
+            .any(|part| part.is_empty() || part.starts_with('.') || part == "维护")
+        || relative == "喵维斯设定.md"
+    {
+        return Err("请提供 Wiki 总索引或已入库记录的相对 Markdown 路径。".into());
+    }
+    if is_profile_page(relative) {
+        return Err("请用 --wiki-profile-section 按章查阅档案。".into());
+    }
+    let source = format!("记忆/wiki/{relative}");
+    let page = read_reference(root, &source)?.ok_or_else(|| format!("Wiki 页面缺失：{source}"))?;
+    if page.body.trim().is_empty() {
+        return Err(format!("Wiki 页面正文为空：{source}"));
+    }
+    Ok(format!("来源：{source}\n{}", page.body))
 }
 
 fn check_home(root: &Path) -> Result<(), String> {

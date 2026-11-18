@@ -15,7 +15,6 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parents[1]
 WIKI = ROOT / "wiki"
-TOPICS = ("家庭日常", "物品与设备", "健康", "工作", "学习", "管家记忆")
 REPORT_DIR = WIKI / "维护" / "报告"
 FRONTMATTER = re.compile(r"\A---[ \t]*\n(.*?)\n---[ \t]*(?:\n|\Z)", re.S)
 MARKDOWN_LINK = re.compile(r"(?<!\\)\[(?!\[)[^\]\n]+\]\(\s*(?:<([^>\n]+)>|([^)\s]+))")
@@ -32,8 +31,8 @@ def valid_date(value):
 
 def lint():
     issues = []
-    entries = {Path(topic) / "index.md" for topic in TOPICS} | {Path("待办与维护.md")}
-    required = entries | {Path("index.md"), Path("维护/模板.md"), Path("维护/log.md")}
+    home = Path("index.md")
+    required = {home, Path("待办与维护.md"), Path("维护/模板.md"), Path("维护/log.md")}
     files = {
         path.relative_to(WIKI)
         for path in WIKI.rglob("*.md")
@@ -42,6 +41,7 @@ def lint():
     for relative in sorted(required - files):
         issues.append(f"缺少页面：{relative}")
 
+    entries = {relative for relative in files if relative != home and relative.parts[0] != "维护"}
     home_links = set()
     for relative in sorted(files):
         path = WIKI / relative
@@ -75,7 +75,7 @@ def lint():
             target = (path.parent / unquote(link.path)).resolve()
             if not target.is_relative_to(ROOT) or not target.exists():
                 issues.append(f"{relative}：本地链接缺失或越界：{link.path}")
-            elif relative == Path("index.md") and target.is_relative_to(WIKI):
+            elif relative == home and target.is_relative_to(WIKI):
                 home_links.add(target.relative_to(WIKI))
 
         for name in WIKILINK.findall(body):
@@ -89,7 +89,7 @@ def lint():
                 matches = {p for p in files if p.stem == node}
             if len(matches) != 1:
                 issues.append(f"{relative}：Wiki 链接缺失或有重名：{name}")
-            elif relative == Path("index.md"):
+            elif relative == home:
                 home_links.update(matches)
 
     for entry in sorted(entries - home_links):

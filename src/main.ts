@@ -170,6 +170,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <section class="dialogue hud-panel" aria-label="最新对话">
     <div class="dialogue-user"><b>YOU</b><p id="user-transcript">“嗨，Jarvis”</p></div>
     <div class="dialogue-reply"><b class="jarvis">JARVIS</b><p id="assistant-transcript">正在启动贾维斯…</p></div>
+    <p id="chat-archive-error" role="status" hidden></p>
   </section>
   <footer class="controls">
     <div class="quick-actions" aria-label="快捷指令">${shortcuts.map(([label, prompt]) => `<button type="button" data-prompt="${prompt}">${label}</button>`).join("")}</div>
@@ -193,6 +194,19 @@ if (currentWindow) {
 const shell = $<HTMLElement>(".shell");
 const transcript = $("#user-transcript");
 const response = $("#assistant-transcript");
+const chatArchiveError = $<HTMLElement>("#chat-archive-error");
+
+function reportChatArchiveError(error: unknown) {
+  chatArchiveError.textContent = `Raw 聊天保存失败：${String(error)}`;
+  chatArchiveError.hidden = false;
+}
+
+function archiveLocalChat(role: "user" | "assistant", text: string) {
+  return currentWindow
+    ? invoke<void>("archive_local_chat", { cwd: workspace, role, text })
+    : Promise.resolve();
+}
+
 const banner = $("#degraded-banner") as HTMLDivElement;
 const mic = $("#mic") as HTMLButtonElement;
 const approval = $("#approval") as HTMLDialogElement;
@@ -251,6 +265,7 @@ function handleAnatomy(text: string) {
     ? "这个对象还没有拆解演示。现在可以查看咖啡机或机械键盘。"
     : "你想拆解什么？现在可以查看咖啡机或机械键盘。";
   response.textContent = message;
+  void archiveLocalChat("assistant", message).catch(reportChatArchiveError);
   speakMapPrompt(message);
   return true;
 }
@@ -462,9 +477,11 @@ async function interpretMapRequest(text: string, revision: number): Promise<MapI
   return mapClassification;
 }
 
-async function handleProfileQuestion(text: string, revision: number): Promise<boolean> {
-  const question = profileQuestion(text);
-  if (!question || !currentWindow) return false;
+async function handleLocalMemoryCommand(text: string, revision: number, channel: "text" | "voice"): Promise<boolean> {
+  const request = text.replace(/^(?:(?:嗨|嘿)[，, ]*)?(?:Jarvis|贾维斯|喵维斯)[，,、：:\s]+/i, "").trim();
+  const remember = /^(?:请)?(?:帮我)?记住(?![了吗没])/.test(request);
+  const question = remember ? null : profileQuestion(text);
+  if ((!remember && !question) || !currentWindow) return false;
   const connection = peer;
   if (connection) {
     muteMapReply();
@@ -472,15 +489,24 @@ async function handleProfileQuestion(text: string, revision: number): Promise<bo
     mapMuteUntil = performance.now() + 16_000;
   }
   let message: string;
+  let spoken: string | undefined;
   try {
-    const profile = await invoke<string | null>("read_user_profile", { cwd: workspace, section: profileSection(question) });
-    message = answerProfileQuestion(question, profile);
+    if (question) {
+      const profile = await invoke<string | null>("read_user_profile", { cwd: workspace, section: profileSection(question) });
+      message = answerProfileQuestion(question, profile);
+    } else {
+      const receipt = await invoke<{ path: string; created: boolean }>("save_raw_memory", { cwd: workspace, request, channel });
+      spoken = receipt.created ? "已保存到 Raw，等待手动入库。" : "这条内容已在 Raw 里。";
+      message = `${spoken} ${receipt.path}`;
+    }
   } catch (error) {
-    message = `这次没能读取用户档案。${String(error)}`;
+    const prefix = remember ? "这次没能保存到 Raw。" : "这次没能读取用户档案。";
+    message = `${prefix}${String(error)}`;
   }
   if (revision !== intentRevision || state.manualStop) return true;
   response.textContent = message;
-  if (connection && connection === peer) queueSpokenReply(message);
+  void archiveLocalChat("assistant", message).catch(reportChatArchiveError);
+  if (connection && connection === peer) queueSpokenReply(spoken ?? message);
   return true;
 }
 
@@ -489,7 +515,7 @@ async function handleSpokenCommand(text: string) {
   if (!connection || state.manualStop || !text || /^(?:[嗯啊哦呃唔]+[。！!，,]*|\[[a-z _-]+\]?)$/i.test(text)) return;
   const revision = beginUserCommand(text);
   if (revision === null) return;
-  if (await handleProfileQuestion(text, revision) || revision !== intentRevision) return;
+  if (await handleLocalMemoryCommand(text, revision, "voice") || revision !== intentRevision) return;
   if (handleAnatomy(text)) return;
   if (!MAP_ENABLED) return;
   if (isOpenMapCommand(text)) {
@@ -1368,6 +1394,7 @@ function releaseIdleRuntime() {
 }
 
 if (currentWindow) {
+  await listen<string>("chat-archive-error", ({ payload }) => reportChatArchiveError(payload));
   await listen<Message>("codex-event", ({ payload }) => void handle(payload));
   await currentWindow.onCloseRequested(async (event) => {
     event.preventDefault();
@@ -1417,15 +1444,25 @@ $("#command-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     return;
   }
-  event.preventDefault(); const input = $("#command-input") as HTMLInputElement, text = input.value.trim();
+  event.preventDefault();
+  const input = $<HTMLInputElement>("#command-input");
+  const original = input.value;
+  const text = original.trim();
   if (!text) return;
+  input.value = "";
+  try {
+    await archiveLocalChat("user", original);
+  } catch (error) {
+    if (!input.value) input.value = original;
+    reportChatArchiveError(error);
+    return;
+  }
   state.manualStop = false;
   transcript.textContent = text;
-  input.value = "";
   if (handleAnatomy(text)) return;
   const revision = beginUserCommand(text);
   if (revision === null) return;
-  if (await handleProfileQuestion(text, revision) || revision !== intentRevision) return;
+  if (await handleLocalMemoryCommand(text, revision, "text") || revision !== intentRevision) return;
   if (MAP_ENABLED) {
     const correction = mapDestinationChange(text, pendingMapAddress ?? mapContext) ?? completeMapEndpoint(text, pendingMapAddress);
     const direct = correction ?? mapIntent(text);

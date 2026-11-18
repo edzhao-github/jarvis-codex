@@ -1,6 +1,8 @@
+pub mod memory;
 mod system_stats;
 mod thread_state;
 mod user_profile;
+mod wiki_search;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -25,6 +27,7 @@ use tokio::{
 
 struct AppState {
     runtime: Mutex<Option<Arc<CodexRuntime>>>,
+    chat_archive: Arc<memory::archive::ChatArchive>,
     runtime_start: Mutex<()>,
     voice_transition: Mutex<()>,
     cold_wake_pending: AtomicBool,
@@ -239,6 +242,7 @@ impl CodexRuntime {
 
         let weak = Arc::downgrade(&runtime);
         let event_app = app.clone();
+        let chat_archive = Arc::clone(&app.state::<AppState>().chat_archive);
         tauri::async_runtime::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
@@ -275,6 +279,20 @@ impl CodexRuntime {
                 if let Some(runtime) = weak.upgrade() {
                     if runtime.handle_map_classification(&message).await {
                         continue;
+                    }
+                    if let Some(chat) = memory::archive::ChatMessage::from_event(&message) {
+                        let active_thread = runtime.thread_id.read().await.clone();
+                        if active_thread.is_some() && active_thread == chat.thread {
+                            let stored = archive_chat(
+                                Arc::clone(&chat_archive),
+                                runtime.workspace.clone(),
+                                chat,
+                            )
+                            .await;
+                            if let Err(error) = stored {
+                                let _ = event_app.emit("chat-archive-error", error);
+                            }
+                        }
                     }
                     match message.get("method").and_then(Value::as_str) {
                         Some("turn/started") => {
@@ -814,6 +832,9 @@ async fn terminate_runtime(state: &AppState) -> Result<(), String> {
 
 const MAP_DISABLED_INSTRUCTIONS: &str = "The in-app map and navigation are temporarily unavailable. For a request to open the in-app map or start navigation, explain that it is unavailable. Answer ordinary questions normally. Do not emit JARVIS_MAP actions.";
 
+const WIKI_QUERY_INSTRUCTIONS: &str = "根据用户问题的意思判断是否需要查已入库的个人或家庭知识，包含明确查 Wiki 的请求和承接上文的追问。通用问题按正常流程回答。查询时先用 --wiki-read index.md 读总索引，根据标题和摘要选择相关页面，再通过 --wiki-read '索引中相对于 Wiki 的页面路径' 读正文，必要时读取关联页。涉及用户本人或个性化建议时，仅查和问题相关的资料；档案字段用专用 --wiki-profile-section 按章读取。用户当前明确说明优先；档案地址或作息不能证明实时位置。索引不足以定位时，用 --wiki-search '关键词' 辅助定位，可换用同义词或更短的词；根据正文作答，附实际读到的 Wiki 路径。资料不完整时说明 Wiki 已记录的范围，区分没有记录与读取失败。查询只使用当前工作区的 Wiki 与档案读取命令。不要查 Raw、模型自身的记忆、其他工作区或网页，也不要修改 Wiki 或把本地内容交给其他工具或服务。";
+const WIKI_VOICE_INSTRUCTIONS: &str = "当用户明确要求查 Wiki，或问题依赖已保存的资料（含承接上文的追问）时，按语义委托后台 Codex，让它先读 Wiki 总索引并核对相关正文。等待后台结果再回答，简短说出所依据的页面。通用问题照常回答。";
+
 async fn ensure_runtime(
     app: AppHandle,
     state: &State<'_, AppState>,
@@ -849,6 +870,11 @@ async fn ensure_runtime(
     let personality = user_profile::personality(&cwd)?;
     let executable =
         std::env::current_exe().map_err(|error| format!("无法定位本地档案查询程序：{error}"))?;
+    let reference_instructions = if user_profile::wiki_enabled(std::path::Path::new(&cwd))? {
+        WIKI_QUERY_INSTRUCTIONS
+    } else {
+        user_profile::CONSULT_PROFILE
+    };
     let runtime = CodexRuntime::spawn(app, permission_mode, cwd.clone()).await?;
     runtime.request("initialize", json!({
         "clientInfo": {"name": "jarvis-codex", "title": "Jarvis Codex", "version": env!("CARGO_PKG_VERSION")},
@@ -861,10 +887,9 @@ async fn ensure_runtime(
         "sandbox": profile.sandbox,
         "developerInstructions": MAP_DISABLED_INSTRUCTIONS,
         "baseInstructions": format!(
-            "{}\n{}\n{}\n在当前线程的 cwd 调用可执行文件 {:?}，用 --wiki-profile-section '章节标题' 读取一章，或用 --wiki-profile-section --list 查看章节。命令路径作为一个 shell 参数。收到章节后只用回答所需的内容。",
+            "{}\n{}\n在当前线程的 cwd 调用可执行文件 {:?}，用 --wiki-profile-section '章节标题' 读取一章，或用 --wiki-profile-section --list 查看章节。命令路径作为一个 shell 参数。收到章节后只用回答所需的内容。\nWiki 查询使用同一可执行文件。{reference_instructions}",
             personality,
             profile.instructions,
-            user_profile::CONSULT_PROFILE,
             executable
         )
     });
@@ -892,6 +917,44 @@ async fn ensure_runtime(
     *runtime.thread_id.write().await = Some(thread_id.clone());
     *state.runtime.lock().await = Some(runtime.clone());
     Ok(runtime)
+}
+
+async fn archive_chat(
+    archive: Arc<memory::archive::ChatArchive>,
+    cwd: String,
+    message: memory::archive::ChatMessage,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || archive.append(std::path::Path::new(&cwd), message))
+        .await
+        .map_err(|error| format!("聊天归档任务失败：{error}"))?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn archive_local_chat(
+    state: State<'_, AppState>,
+    cwd: String,
+    role: memory::Role,
+    text: String,
+) -> Result<(), String> {
+    let cwd = validated_workspace(&cwd)?;
+    archive_chat(
+        Arc::clone(&state.chat_archive),
+        cwd,
+        memory::archive::ChatMessage::local(role, text),
+    )
+    .await
+}
+
+#[tauri::command]
+fn save_raw_memory(
+    cwd: String,
+    request: String,
+    channel: memory::raw::RawChannel,
+) -> Result<memory::raw::RawReceipt, String> {
+    let cwd = validated_workspace(&cwd)?;
+    memory::raw::save(std::path::Path::new(&cwd), &request, channel)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1064,6 +1127,12 @@ async fn start_codex_voice(
     .await?;
     let thread_id = runtime.thread().await?;
     let personality = user_profile::personality(&runtime.workspace)?;
+    let reference_instructions =
+        if user_profile::wiki_enabled(std::path::Path::new(&runtime.workspace))? {
+            WIKI_VOICE_INSTRUCTIONS
+        } else {
+            "涉及个人档案时，委托后台按需查阅当前工作区的本地档案，等结果再作答。"
+        };
     if runtime.voice_active.load(Ordering::SeqCst) {
         let _ = runtime
             .request("thread/realtime/stop", json!({"threadId": thread_id}))
@@ -1086,7 +1155,7 @@ async fn start_codex_voice(
         "threadId": thread_id,
         "outputModality": "audio",
         "version": "v3",
-        "prompt": format!("{}\n\n你是 Jarvis 桌面助手。应用内地图和导航已暂停。如果用户要求打开应用内地图或开始导航，直接用当前音色说明暂不可用。遇到打开部件拆解演示的请求，保持安静，等应用通过 speakable 通道发送结果，再用简短语音按原文播报。拆解演示由应用直接处理，无需委托 Codex。用户直接问自己的姓名、家中猫狗或宠物的名字、公司在哪里、公司叫什么、几点上下班或喜欢喝什么，由应用从本地 Wiki 档案直答。对这些问题保持安静，等待本地播报。普通对话和其他任务照常处理。其他涉及用户本人、个人偏好、作息、长期背景或个性化建议的问题，先委托后台 Codex 在当前工作目录通过 Jarvis 本地档案命令查阅相关章节，等后台给出结果再回答。即使是简单问题也要先委托；不要凭印象回答、向用户重复索取或未经检查声称没有记录。忽略呼吸声、杂音和没有实际内容的语音。", personality),
+        "prompt": format!("{}\n\n你是 Jarvis 桌面助手。应用内地图和导航已暂停。如果用户要求打开应用内地图或开始导航，直接用当前音色说明暂不可用。遇到打开部件拆解演示的请求，保持安静，等应用通过 speakable 通道发送结果，再用简短语音按原文播报。拆解演示由应用直接处理，无需委托 Codex。{reference_instructions}用户直接问自己的姓名、家中猫狗或宠物的名字、公司在哪里、公司叫什么、几点上下班或喜欢喝什么，由应用从本地 Wiki 档案直答。对这些问题保持安静，等待本地播报。 桌面会把对话原文和语音转写保存在本机 Raw，Wiki 由用户手动入库。用户明确说「记住……」时，由应用另存 Raw 条目，保持安静，等待应用播报实际保存结果。不要宣称已经完成 Wiki 入库。普通对话和其他任务照常处理。需要查个人档案时，由后台按需读取相关章节。忽略呼吸声、杂音和没有实际内容的语音。", personality),
         "includeStartupContext": true,
         "clientManagedHandoffs": false,
         // STOP must be final. Flushing the tail can create a new Codex turn
@@ -1378,6 +1447,25 @@ pub fn lookup_profile_from_cli(section: &str) -> Result<String, String> {
     user_profile::lookup(&workspace, section)
 }
 
+pub fn read_wiki_from_cli(page: &str) -> Result<String, String> {
+    let cwd = std::env::current_dir().map_err(|error| format!("无法定位当前工作目录：{error}"))?;
+    user_profile::read_wiki_page(&cwd, page)
+}
+
+pub fn search_wiki_from_cli(query: &str) -> Result<String, String> {
+    let cwd = std::env::current_dir().map_err(|error| format!("无法定位当前工作目录：{error}"))?;
+    let cwd = validated_workspace(&cwd.to_string_lossy())?;
+    let matches = wiki_search::search(std::path::Path::new(&cwd), query)?;
+    if matches.is_empty() {
+        return Ok("Wiki 里没有找到相关条目。".into());
+    }
+    Ok(matches
+        .into_iter()
+        .map(|entry| format!("来源：{}\n{}", entry.source, entry.excerpt))
+        .collect::<Vec<_>>()
+        .join("\n\n"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let arguments: Vec<String> = std::env::args().collect();
@@ -1389,6 +1477,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(AppState {
             runtime: Mutex::new(None),
+            chat_archive: Arc::new(memory::archive::ChatArchive::new()),
             runtime_start: Mutex::new(()),
             voice_transition: Mutex::new(()),
             cold_wake_pending: AtomicBool::new(cold_wake_pending),
@@ -1414,6 +1503,8 @@ pub fn run() {
             start_jarvis,
             classify_map_intent,
             read_user_profile,
+            save_raw_memory,
+            archive_local_chat,
             start_codex_voice,
             stop_codex_voice,
             apply_voice_personality,
