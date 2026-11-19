@@ -1,60 +1,21 @@
-# Architecture
+# 架构
 
-## Runtime flow
+Tauri 管理窗口、唤醒和本地记忆。前端 QwenVoice 管理 AudioWorklet PCM 输入、语音播放、打断和动画事件。原生 qwen 模块启动随应用打包的 Node 桥接进程，通过随机回环端口和令牌建立 WebSocket。
 
-```text
-JarvisWakeListener
-  └─ on-device SFSpeechRecognizer
-       └─ wake event
-            └─ Tauri/Rust host shows Jarvis window
-                 ├─ disarms wake listener and releases microphone
-                 ├─ native AVFoundation permission preflight
-                 └─ WKWebView creates WebRTC offer
-                      └─ Codex app-server V3 realtime conversation
-                           ├─ audio response
-                           ├─ transcript events
-                           └─ Codex turns, tools and approvals
-```
+桥接沿用已验证的实时会话、工具调度和 HarnessRunner。API Key 保存在 macOS 钥匙串，启动时读取后经已验证的本地连接传入桥接内存，不写入项目文件。千问密钥用于语音服务，DeepSeek 密钥仅传入 Harness 子进程。任务文本与结果在两服务之间流转。
 
-The wake listener and Voice session never capture the microphone concurrently.
-The Rust host terminates the listener and waits for `AVAudioEngine` to release
-the input device before WebRTC starts.
+开始事件触发提示音和工作动画；工具完成排队到用户停止说话且本地音频播完后再播报。取消是独立状态，不冒充故障或成功。关闭窗口、停止通话、应用退出或父进程 stdin 关闭时清理运行时。
 
-## Thread lifecycle
+独立测试页仍位于 experiments/qwen-voice。桌面打包使用 scripts/prepare-voice-runtime.mjs 将固定 SDK 与 Node 装入 runtime/desktop-voice。用户工作目录和 Harness 状态目录与应用资源分开。
 
-The frontend stores one thread ID per canonical workspace path. The Rust host
-first attempts `thread/resume`; if the stored thread is unavailable, it creates
-a durable `thread/start` session and replaces the stored ID. Voice and text
-input share this runtime.
+## Wiki 查询
 
-## Process lifecycle
+桌面连接注册 wiki_index、wiki_read、wiki_profile、wiki_search。模型判断是否需要记忆，按索引选页，必要时搜索再读正文，带页面来源回答；前端不分类固定问法或生成档案答案。桥接通过随包主程序的本地 CLI 调用既有读取器，固定工作目录、禁用 shell、限制执行时间和输出大小。个人档案只按章节读取，Raw 和维护目录不在常规查询入口。
 
-- Login start launches the app with `--background`.
-- Closing the window hides it; it does not terminate the listener.
-- A cold wake launches the app with `--jarvis-wake`.
-- Warm wake raises the existing window and starts Voice.
-- On macOS, wake explicitly activates `NSApplication`, briefly raises the
-  window level, focuses Jarvis, and then restores the normal window level.
-- STOP interrupts active turns, ends Voice and rearms the listener.
+用户在设置中允许本次运行的按需 Wiki 使用后，相关内容才会通过工具结果发给千问；不开启时返回 permission_required，不做本地读取。搜索空结果、读取错误和缺失运行时分别返回不同状态，不能当作档案为空。界面记录本次会话实际读取的来源。用户关闭授权并保存后关闭当前会话；远端已收到的内容不能撤回。
 
-## Trust boundaries
+真实模型验收使用 tests/fixtures/wiki.mjs 的临时合成工作区。scripts/check-wiki-live.mjs 从 stdin 接收密钥，不保存密钥；检查模型实际选工具、跨页关联、追问和缺页反馈。日常 npm run check 包含本地 CLI 的隔离测试，需先构建原生程序。
 
-- The Swift helper receives microphone and speech-recognition access.
-- The Tauri host receives microphone access for Voice and owns Codex app-server.
-- The WebView can call only commands exposed through the Tauri capability file.
-- Permission profiles are validated in Rust rather than accepting arbitrary
-  frontend sandbox strings:
-  - Safe: `workspace-write` + `on-request`
-  - Auto: `workspace-write` + `never`
-  - Full: `danger-full-access` + `never`
-- Changing permission mode rebuilds the Codex runtime while resuming the saved
-  workspace thread.
-- “New thread” stops the active Voice/turn, shuts down the old runtime, and
-  creates a fresh persistent thread without deleting the previous Codex history.
-- No API keys are embedded in the app.
+查询按用户轮次设置读取边界：读取失败后本轮停止扩展查询；档案工具重定向除外。连续两次关键词未命中后停止扩展读取，返回已查范围不足的状态，防止模型穷举无关个人章节。新用户输入重新开放查询，工具不把该边界解释为全库无记录。
 
-## Upstream dependency
-
-Realtime conversation is an experimental Codex app-server surface. CI verifies
-the current request shapes, but a Codex update can still change protocol
-semantics. Release validation must include a real Voice smoke test.
+唤醒连接完成后请求真实音频招呼；文字输入启动会话不插入招呼。记忆的查询步骤和来源只在界面呈现，默认语音直接回答；用户追问依据时再解释。

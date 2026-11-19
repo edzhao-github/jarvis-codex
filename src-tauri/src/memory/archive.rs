@@ -2,8 +2,7 @@
 
 use super::{storage, MemoryError, Result, Role};
 use chrono::Local;
-use serde::Serialize;
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, Write};
@@ -15,12 +14,12 @@ use std::sync::{
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum Channel {
+pub enum Channel {
     Text,
     Voice,
-    Codex,
+    DeepSeek,
     Local,
 }
 
@@ -33,6 +32,7 @@ pub(crate) struct ChatMessage {
 }
 
 impl ChatMessage {
+    #[cfg(test)]
     pub(crate) fn local(role: Role, text: String) -> Self {
         Self {
             role,
@@ -47,37 +47,20 @@ impl ChatMessage {
         }
     }
 
-    pub(crate) fn from_event(event: &Value) -> Option<Self> {
-        let params = event.get("params")?;
-        let thread = params.get("threadId")?.as_str()?.to_owned();
-        let (role, channel, text, id) = match event.get("method")?.as_str()? {
-            "thread/realtime/transcript/done" => {
-                let role = match params.get("role")?.as_str()? {
-                    "user" => Role::User,
-                    "assistant" => Role::Assistant,
-                    _ => return None,
-                };
-                let text = params.get("text")?.as_str()?;
-                (role, Channel::Voice, text, None)
-            }
-            "item/completed" => {
-                let item = params.get("item")?;
-                if item.get("type")?.as_str()? != "agentMessage" {
-                    return None;
-                }
-                let text = item.get("text")?.as_str()?;
-                let id = item.get("id").and_then(Value::as_str).map(str::to_owned);
-                (Role::Assistant, Channel::Codex, text, id)
-            }
-            _ => return None,
-        };
-        Some(Self {
+    pub(crate) fn record(
+        role: Role,
+        channel: Channel,
+        text: String,
+        thread: Option<String>,
+        id: Option<String>,
+    ) -> Self {
+        Self {
             role,
             channel,
-            text: text.to_owned(),
-            thread: Some(thread),
+            text,
+            thread,
             id,
-        })
+        }
     }
 }
 
@@ -135,6 +118,12 @@ impl ChatArchive {
         let channel = serde_json::to_string(&msg.channel).map_err(MemoryError::InvalidStore)?;
         let thread = serde_json::to_string(&msg.thread).map_err(MemoryError::InvalidStore)?;
         let now = captured_at.timestamp_millis();
+        let message_id = format!(
+            "{}-{}-{}",
+            now,
+            std::process::id(),
+            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+        );
         let time = captured_at.format("%H:%M:%S%.3f");
         let temporary = root.join(format!(
             ".chat-{}-{}.pending",
@@ -151,7 +140,7 @@ impl ChatArchive {
             } else {
                 writeln!(file, "# {day} 聊天记录")?;
             }
-            write!(file, "\n## {time} · {label}\n\n<!-- raw-chat role={role} channel={channel} thread={thread} captured_at_ms={now} bytes={} -->\n\n", msg.text.len())?;
+            write!(file, "\n## {time} · {label}\n\n<!-- raw-chat role={role} channel={channel} thread={thread} captured_at_ms={now} id=\"{message_id}\" bytes={} -->\n\n", msg.text.len())?;
             file.write_all(msg.text.as_bytes())?;
             file.write_all(b"\n")?;
             file.sync_all()?;

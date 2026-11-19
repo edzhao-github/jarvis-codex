@@ -17,8 +17,6 @@ const PREFERENCES: &str = "管家记忆/已确认偏好.md";
 const WORK: &str = "工作/工作档案.md";
 const LEGACY_PROFILE: &str = "用户档案.md";
 
-pub const CONSULT_PROFILE: &str = "回答涉及用户本人、偏好、作息、长期背景或个性化建议时，先在当前线程工作目录用 Jarvis 的本地档案命令查阅相关章节。通用问题无需读取。当前用户明确说明优先，地址或作息不代表实时位置。只查任务所需章节，不全文复述，不把资料交给搜索或其他服务，也不写入公开产物。读取失败就说明问题，不能当作没有记录。仅在用户明确要求时按档案记录规则更新。";
-
 #[derive(Clone, Copy, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProfileSection {

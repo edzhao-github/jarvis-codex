@@ -1,0 +1,17 @@
+<!doctype html><html lang="zh"><meta charset="utf-8"><title>千问语音实验室</title>
+<style>body{font:16px system-ui;max-width:850px;margin:40px auto;padding:24px;background:#101923;color:#e2ecf6}label{display:block;margin:12px 0}input,select,button{font:inherit;padding:8px;border-radius:6px}input{width:70%}button{margin:8px}pre{white-space:pre-wrap;background:#192939;padding:16px;max-height:350px;overflow:auto}</style>
+<h1>千问语音实验室</h1><p>独立测试 · 语音连接千问；填写 DeepSeek 密钥后可在独立测试目录执行真实任务。连接后麦克风音频发送给所选地域的阿里云，产生 API 用量。密钥仅在当前连接使用，不写文件。</p>
+<label>平台 / 地域 <select id="region"><option value="qianwen">千问 AI 平台（不需要 Workspace ID）</option><option value="cn-beijing">北京</option><option value="ap-southeast-1">新加坡</option></select></label>
+<label>Workspace ID（仅百炼需要） <input id="workspace" autocomplete="off"></label>
+<label>API Key <input id="key" type="password" autocomplete="off"></label>
+<label>DeepSeek API Key（可选，启用真实执行） <input id="deepseekKey" type="password" autocomplete="off"></label>
+<label>执行模型 <input id="deepseekModel" value="deepseek-v4-flash"></label>
+<p>执行目录：runtime/qwen-harness/workspace；超出默认权限的请求会被拒绝。结束通话同时关闭执行引擎。</p>
+<button id="stopTask">停止实际任务</button>
+<label>模型 <input id="model" value="qwen-audio-3.1-realtime-plus"></label>
+<label>音色 <input id="voice" value="longanqian_v3.1"></label>
+<label>断句 <select id="mode"><option value="smart_turn_v2">语义断句</option><option value="server_vad">声学断句（对照）</option></select></label>
+<button id="start">连接并开启麦克风</button><button id="interrupt" disabled>打断播报</button><button id="stop" disabled>结束通话</button>
+<p id="status">未连接</p><p id="metric">首段播放延迟：等待测量（从服务端检测说完事件到本机计划播放时刻，不是完整端到端测量）</p>
+<form id="text"><input id="message" placeholder="也可输入文字验证语音输出"><button>发送</button></form>
+<pre id="log" aria-live="polite"></pre><script type="module" src="/client.js"></script></html>

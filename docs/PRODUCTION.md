@@ -20,9 +20,9 @@ npm ci
 npm run check
 npm run build
 codesign --verify --deep --strict \
-  "src-tauri/target/release/bundle/macos/Jarvis Codex.app"
+  "src-tauri/target/release/bundle/macos/Meowvis.app"
 codesign -d --entitlements :- \
-  "src-tauri/target/release/bundle/macos/Jarvis Codex.app"
+  "src-tauri/target/release/bundle/macos/Meowvis.app"
 ```
 
 Expected entitlement:

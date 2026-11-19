@@ -1,4 +1,4 @@
-// Bundle launcher that discovers Codex and inherits the system proxy.
+// Bundle launcher that inherits the system proxy.
 #include <mach-o/dyld.h>
 #include <CFNetwork/CFNetwork.h>
 #include <limits.h>
@@ -29,28 +29,8 @@ static void inherit_proxy(CFDictionaryRef settings, CFStringRef enabledKey,
     setenv(lower, proxy, 0);
 }
 
-static void discover_codex(void) {
-    // Preserve explicit configuration; Finder launches do not inherit shell PATH.
-    if (getenv("JARVIS_CODEX_BIN")) return;
-    const char *candidates[] = {
-        "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
-        "/Applications/Codex.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
-        "/Applications/ChatGPT.app/Contents/Resources/codex",
-        "/Applications/Codex.app/Contents/Resources/codex",
-        "/opt/homebrew/bin/codex",
-        "/usr/local/bin/codex",
-    };
-    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
-        if (access(candidates[i], X_OK) == 0) {
-            setenv("JARVIS_CODEX_BIN", candidates[i], 0);
-            return;
-        }
-    }
-}
-
 int main(int argc, char **argv) {
     if (argc < 1) return 1;
-    discover_codex();
     CFDictionaryRef proxies = CFNetworkCopySystemProxySettings();
     if (proxies) {
         inherit_proxy(proxies, kCFNetworkProxiesHTTPEnable, kCFNetworkProxiesHTTPProxy,
@@ -64,13 +44,13 @@ int main(int argc, char **argv) {
     if (_NSGetExecutablePath(path, &size) != 0) return 1;
     char *separator = strrchr(path, '/');
     if (!separator) return 1;
-    const char *runtime = "jarvis-codex";
+    const char *runtime = "meowvis-desktop";
     size_t prefix = (size_t)(separator + 1 - path);
     if (prefix + strlen(runtime) + 1 > sizeof(path)) return 1;
     strcpy(path + prefix, runtime);
 
     argv[0] = path;
     execv(path, argv);
-    perror("Could not start Jarvis Codex");
+    perror("Could not start Meowvis");
     return 1;
 }

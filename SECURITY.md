@@ -1,26 +1,7 @@
-# Security policy
+# 安全边界
 
-## Supported versions
+密钥持久化到 macOS 钥匙串，运行时在应用及桥接进程内存中使用，不写入项目配置或日志。不要在问题报告中包含密钥、用户档案或完整私密会话。
 
-Only the latest release is supported.
+本机桥接绑定回环地址，桌面连接验证来源与随机会话令牌。任务采用 workspace-write，额外权限请求拒绝；目录写入限制不等于读取隔离。停止不会撤销已有文件操作。
 
-## Reporting
-
-Do not open a public issue for vulnerabilities that expose credentials, local
-files or approval bypasses. Report them privately to the repository owner
-through GitHub Security Advisories.
-
-Include:
-
-- affected version and macOS version;
-- reproduction steps;
-- whether microphone, files, Codex credentials or approval flow are affected;
-- logs with tokens, paths and personal content redacted.
-
-## Security invariants
-
-- No API keys or Codex tokens are stored in this repository.
-- Wake recognition stays on device.
-- WebView remote code loading is blocked by CSP.
-- Codex file access is restricted to the configured workspace sandbox.
-- High-risk app-server requests require explicit user approval.
+Harness 为预览依赖，发布前需要依赖审查、签名、公证和端到端权限验收。

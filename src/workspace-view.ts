@@ -15,7 +15,7 @@ export function icon(name: keyof typeof icons) {
 }
 
 export const workers = [
-  ["orchestrator", "CODEX", "command"],
+  ["orchestrator", "DEEPSEEK", "command"],
   ["researcher", "RESEARCH", "research"],
   ["developer", "BUILDER", "build"],
   ["reviewer", "REVIEW", "review"],

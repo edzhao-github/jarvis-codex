@@ -5,8 +5,8 @@
 	<key>NSCameraUsageDescription</key>
 	<string>Jarvis does not capture video; this declaration allows WebKit to initialize its WebRTC media permission path.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Jarvis locally listens for the wake phrase “Hi Jarvis”; official Codex Voice handles the conversation.</string>
+	<string>Jarvis locally listens for the wake phrase “Hi Jarvis”; Qwen Voice handles the conversation.</string>
   <key>NSSpeechRecognitionUsageDescription</key>
-  <string>Jarvis locally recognizes its wake phrase before opening official Codex Voice.</string>
+  <string>Jarvis locally recognizes its wake phrase before opening Qwen Voice.</string>
 </dict>
 </plist>

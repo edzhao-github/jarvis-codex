@@ -56,15 +56,15 @@ final class WakeListener {
             while enclosing.path != "/" {
                 if enclosing.pathExtension == "app",
                    FileManager.default.isExecutableFile(atPath:
-                    enclosing.appendingPathComponent("Contents/MacOS/jarvis-codex").path) {
+                    enclosing.appendingPathComponent("Contents/MacOS/meowvis-desktop").path) {
                     discoveredHost = enclosing
                     break
                 }
                 enclosing.deleteLastPathComponent()
             }
-            let installed = URL(fileURLWithPath: "/Applications/Jarvis Codex.app")
+            let installed = URL(fileURLWithPath: "/Applications/Meowvis.app")
             hostApp = discoveredHost ?? (Bundle(url: installed)?.bundleIdentifier ==
-                "com.bigguan.jarvis-codex" ? installed : nil)
+                "com.bigguan.meowvis-desktop" ? installed : nil)
         }
     }
 
@@ -246,7 +246,7 @@ final class WakeListener {
 
     private func openHostApp() {
         guard let hostApp else {
-            emit(["type": "error", "message": "Jarvis Codex.app was not found"])
+            emit(["type": "error", "message": "Meowvis.app was not found"])
             exit(8)
         }
         let configuration = NSWorkspace.OpenConfiguration()

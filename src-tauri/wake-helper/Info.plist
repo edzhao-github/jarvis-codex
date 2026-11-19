@@ -7,7 +7,7 @@
   <key>CFBundleExecutable</key>
   <string>JarvisWakeListener</string>
   <key>CFBundleIdentifier</key>
-  <string>com.bigguan.jarvis-codex.wake-listener</string>
+  <string>com.bigguan.meowvis-desktop.wake-listener</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
@@ -23,6 +23,6 @@
   <key>NSMicrophoneUsageDescription</key>
   <string>Jarvis locally listens for the wake phrase “Hi Jarvis”.</string>
   <key>NSSpeechRecognitionUsageDescription</key>
-  <string>Jarvis locally recognizes only the wake phrase before opening official Codex Voice.</string>
+  <string>Jarvis locally recognizes only the wake phrase before opening Qwen Voice.</string>
 </dict>
 </plist>

@@ -1,5 +1,5 @@
 {
-  "name": "jarvis-codex",
+  "name": "meowvis-desktop",
   "version": "0.2.0",
   "private": true,
   "type": "module",
@@ -7,12 +7,14 @@
     "wake:build": "zsh scripts/build-wake-helper.sh",
     "predev": "npm run wake:build",
     "dev": "tauri dev",
-    "prebuild": "npm run wake:build",
+    "prebuild": "npm run wake:build && npm run voice:prepare",
     "build": "tauri build",
     "web:dev": "vite",
     "web:build": "tsc && vite build",
     "test": "node --test tests/*.test.mjs",
-    "check": "npm run wake:build && npm test && npm run web:build && cargo fmt --manifest-path src-tauri/Cargo.toml --check && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings"
+    "check": "npm run wake:build && cargo build --manifest-path src-tauri/Cargo.toml && npm test && npm run web:build && cargo fmt --manifest-path src-tauri/Cargo.toml --check && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
+    "voice:qwen": "node experiments/qwen-voice/start.mjs",
+    "voice:prepare": "node scripts/prepare-voice-runtime.mjs"
   },
   "dependencies": {
     "@mapbox/vector-tile": "^3.0.0",
@@ -20,9 +22,12 @@
     "pbf": "^5.1.2"
   },
   "devDependencies": {
+    "@deepseek-ai/dsh-sdk-client": "0.2.2-rc.5",
     "@tauri-apps/cli": "^2.11.4",
+    "@types/ws": "^8.18.2",
     "typescript": "^7.0.2",
-    "vite": "^8.1.5"
+    "vite": "^8.1.5",
+    "ws": "^8.23.0"
   },
   "engines": {
     "node": ">=20"

@@ -15,13 +15,13 @@
 
 Manual test environment and results:
 
-<!-- macOS version, hardware, relevant Codex installation, and observed result. -->
+<!-- macOS version, hardware, relevant 开发助手 installation, and observed result. -->
 
 ## Risk review
 
 - [ ] No microphone, wake, Voice, STOP, or thread-lifecycle behavior changed
 - [ ] No permission, privacy, signing, packaging, or security boundary changed
-- [ ] No experimental Codex app-server protocol usage changed
+- [ ] No experimental 开发助手 app-server protocol usage changed
 
 <!-- If any item above is unchecked, explain the impact and validation. -->
 

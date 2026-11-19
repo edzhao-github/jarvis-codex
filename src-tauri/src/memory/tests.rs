@@ -597,8 +597,7 @@ fn raw_requests_do_not_follow_links_or_overwrite_altered_entries() {
 
 #[test]
 fn chat_archive_preserves_completed_text_voice_and_local_replies_verbatim() {
-    use super::archive::{ChatArchive, ChatMessage};
-    use serde_json::json;
+    use super::archive::{Channel, ChatArchive, ChatMessage};
 
     let workspace = Workspace::new();
     let other = Workspace::new();
@@ -612,26 +611,28 @@ fn chat_archive_preserves_completed_text_voice_and_local_replies_verbatim() {
         )
         .unwrap();
 
-    let draft = json!({"method":"thread/realtime/transcript/delta","params":{"threadId":"fixture","role":"user","delta":"片段"}});
-    assert!(ChatMessage::from_event(&draft).is_none());
-
     let voice_user = " 每周五给合成植物浇水。 ";
-    let voice_assistant = "好的。\n\u{2022} 合成回复";
-    for (role, text) in [("user", voice_user), ("assistant", voice_assistant)] {
-        let event = json!({"method":"thread/realtime/transcript/done","params":{"threadId":"fixture","role":role,"text":text}});
-        archive
-            .append(workspace.path(), ChatMessage::from_event(&event).unwrap())
-            .unwrap();
-    }
-    let answer = "合成 Codex 回复\n  原样换行和缩进。  ";
-    let provider = json!({"method":"item/completed","params":{"threadId":"fixture","item":{"type":"agentMessage","id":"stable-item","text":answer}}});
-    for _ in 0..2 {
+    let voice_assistant = "好的。\n合成回复";
+    for (role, text) in [(Role::User, voice_user), (Role::Assistant, voice_assistant)] {
         archive
             .append(
                 workspace.path(),
-                ChatMessage::from_event(&provider).unwrap(),
+                ChatMessage::record(role, Channel::Voice, text.into(), None, None),
             )
             .unwrap();
+    }
+    let answer = "合成执行回复\n  原样换行和缩进。  ";
+    let provider = || {
+        ChatMessage::record(
+            Role::Assistant,
+            Channel::DeepSeek,
+            answer.into(),
+            Some("fixture".into()),
+            Some("stable-item".into()),
+        )
+    };
+    for _ in 0..2 {
+        archive.append(workspace.path(), provider()).unwrap();
     }
     archive
         .append(
@@ -639,9 +640,7 @@ fn chat_archive_preserves_completed_text_voice_and_local_replies_verbatim() {
             ChatMessage::local(Role::Assistant, local.into()),
         )
         .unwrap();
-    archive
-        .append(other.path(), ChatMessage::from_event(&provider).unwrap())
-        .unwrap();
+    archive.append(other.path(), provider()).unwrap();
 
     let archive_root = workspace.path().join("记忆/raw/聊天记录");
     let mut daily: Vec<_> = fs::read_dir(&archive_root)
@@ -660,7 +659,7 @@ fn chat_archive_preserves_completed_text_voice_and_local_replies_verbatim() {
         (user, "text", "用户"),
         (voice_user, "voice", "用户"),
         (voice_assistant, "voice", "贾维斯"),
-        (answer, "codex", "贾维斯"),
+        (answer, "deep_seek", "贾维斯"),
         (local, "local", "贾维斯"),
     ] {
         let offset = document
